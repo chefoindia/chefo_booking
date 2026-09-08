@@ -1,0 +1,13 @@
+{
+  "folders": [
+    { "name": "booking-backend",  "path": "booking-backend" },
+    { "name": "booking-business", "path": "booking-business" },
+    { "name": "booking-customer", "path": "booking-customer" },
+    { "name": "Chefo Booking (root)", "path": "." }
+  ],
+  "settings": {
+    "files.exclude": { "**/node_modules": true, "**/.next": true },
+    "search.exclude": { "**/node_modules": true, "**/.next": true, "**/package-lock.json": true },
+    "editor.formatOnSave": false
+  }
+}

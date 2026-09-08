@@ -1,0 +1,8 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "booking-backend",  "runtimeExecutable": "npm", "runtimeArgs": ["--prefix", "booking-backend", "run", "dev"], "port": 40005 },
+    { "name": "booking-business", "runtimeExecutable": "npm", "runtimeArgs": ["--prefix", "booking-business", "run", "dev", "--", "-p", "4001"], "port": 4001 },
+    { "name": "booking-customer", "runtimeExecutable": "npm", "runtimeArgs": ["--prefix", "booking-customer", "run", "dev", "--", "-p", "4003"], "port": 4003 }
+  ]
+}
