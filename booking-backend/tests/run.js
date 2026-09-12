@@ -582,8 +582,22 @@ async function main() {
         logs.some((l) => String(l.actorUserId) === String(owner._id) && l.actorKind === "operator"));
     check("customer actions attributed to the party, not an operator",
         logs.some((l) => l.actorKind === "customer" && l.actorPartyId));
-    check("no credential ever written to the trail",
-        !/password|passwordHash|token/i.test(JSON.stringify(logs)));
+    // Precise on purpose: an action such as "Signed in with a login ID and
+    // password" legitimately contains the WORD. What must never appear is a
+    // credential-bearing KEY, or a VALUE shaped like a bcrypt hash or a JWT.
+    const leaks = [];
+    const walk = (v, path = "") => {
+        if (v === null || typeof v !== "object") {
+            if (typeof v === "string" && /^\$2[aby]\$\d\d\$|^eyJ[\w-]+\.[\w-]+\./.test(v)) leaks.push(`${path}=<secret-shaped>`);
+            return;
+        }
+        for (const [k, val] of Object.entries(v)) {
+            if (/^(password|passwordHash|token|idToken|otp|resetToken|code)$/i.test(k)) leaks.push(`${path}.${k}`);
+            walk(val, `${path}.${k}`);
+        }
+    };
+    logs.forEach((l, i) => walk({ before: l.before, after: l.after, details: l.details }, `log[${i}]`));
+    check("no credential ever written to the trail", leaks.length === 0, leaks.join(", "));
 
     /* ================= resolved requests are immutable history ================= */
     section("Request history is preserved");

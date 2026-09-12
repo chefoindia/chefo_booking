@@ -28,11 +28,11 @@ export default function TeamPage() {
 
             <div className="row" style={{ marginBottom: 14 }}>
                 {access.can("users.view") && (
-                    <button className={`btn btn-sm ${tab === "people" ? "btn-primary" : ""}`}
+                    <button className={`btn btn-sm ${tab === "people" ? "btn-primary" : "btn-secondary"}`}
                         onClick={() => setTab("people")}>People</button>
                 )}
                 {access.can("roles.view") && (
-                    <button className={`btn btn-sm ${tab === "roles" ? "btn-primary" : ""}`}
+                    <button className={`btn btn-sm ${tab === "roles" ? "btn-primary" : "btn-secondary"}`}
                         onClick={() => setTab("roles")}>Roles</button>
                 )}
             </div>

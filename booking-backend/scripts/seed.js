@@ -17,6 +17,7 @@ const MealVariant = require("../models/MealVariant");
 
 const SLUG = process.env.SEED_BUSINESS_SLUG || "demo-canteen";
 const OWNER_EMAIL = process.env.SEED_OWNER_EMAIL || "owner@demo.test";
+const OWNER_PHONE = process.env.SEED_OWNER_PHONE || "+919000000001";
 const OWNER_PASSWORD = process.env.SEED_OWNER_PASSWORD || "booking123";
 
 // Cutoffs chosen to match the acceptance scenarios: breakfast 07:00 (set the
@@ -50,6 +51,9 @@ const VARIANTS = [
             city: "Bhubaneswar",
             addressLine: "Plot 12, Industrial Estate",
             acceptingBookings: true,
+            // Seeded businesses skip the signup wizard, so mark the setup done
+            // or the dashboard would send the demo owner back to finish it.
+            setupCompletedAt: new Date(),
         });
         console.log(`Created business "${business.name}" (/b/${business.slug})`);
     } else {
@@ -76,11 +80,15 @@ const VARIANTS = [
             businessId: business._id,
             name: process.env.SEED_OWNER_NAME || "Demo Owner",
             email: OWNER_EMAIL,
+            phone: OWNER_PHONE,
             passwordHash: await bcrypt.hash(OWNER_PASSWORD, 10),
+            // A real password, deliberately — the demo owner is meant to be
+            // signed into with the login-ID form, without an SMS.
+            passwordSet: true,
             isOwner: true,
             isActive: true,
         });
-        console.log(`\nOwner created:\n  email:    ${OWNER_EMAIL}\n  password: ${OWNER_PASSWORD}`);
+        console.log(`\nOwner created:\n  mobile:   ${OWNER_PHONE}\n  email:    ${OWNER_EMAIL}\n  password: ${OWNER_PASSWORD}`);
         console.log("  Change this password after signing in.");
     } else {
         console.log(`\nOwner already exists (${owner.email || owner.phone}) — password left unchanged.`);

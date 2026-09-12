@@ -12,6 +12,8 @@ const Booking = require("../models/Booking");
 const { authenticate, requirePermission } = require("../middleware/authenticate");
 const { normalisePhone } = require("../utils/phone");
 const { record } = require("../services/audit");
+const { notify, CONCERN } = require("../services/notify");
+const { sendCsv } = require("../utils/csv");
 
 const isId = (v) => mongoose.Types.ObjectId.isValid(String(v));
 const clean = (v, max = 120) => String(v ?? "").replace(/\s+/g, " ").trim().slice(0, max);
@@ -21,7 +23,7 @@ router.get("/api/parties",
     authenticate, requirePermission("parties.view"),
     async (req, res, next) => {
         try {
-            const { q, partyType, limit = "100" } = req.query;
+            const { q, partyType, sort = "recent", page = "1", limit = "50" } = req.query;
             const filter = { businessId: req.businessId };
 
             if (partyType) filter.partyType = String(partyType);
@@ -35,14 +37,40 @@ router.get("/api/parties",
                 ];
             }
 
-            const parties = await BookingParty.find(filter)
-                // Most recently active first: the people an operator is dealing
-                // with today are the ones they need at the top.
-                .sort({ lastBookingAt: -1, createdAt: -1 })
-                .limit(Math.min(parseInt(limit, 10) || 100, 300))
-                .lean();
+            // Most recently active first by default: the people an operator is
+            // dealing with today are the ones they need at the top.
+            const order = { recent: { lastBookingAt: -1, createdAt: -1 }, name: { name: 1 }, bookings: { bookingCount: -1, name: 1 } }[sort]
+                || { lastBookingAt: -1, createdAt: -1 };
+            const perPage = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
+            const skip = (Math.max(parseInt(page, 10) || 1, 1) - 1) * perPage;
 
-            res.json({ parties });
+            const [parties, total] = await Promise.all([
+                BookingParty.find(filter).sort(order).skip(skip).limit(perPage).lean(),
+                BookingParty.countDocuments(filter),
+            ]);
+
+            res.json({ parties, page: Math.floor(skip / perPage) + 1, perPage, total, hasMore: skip + parties.length < total });
+        } catch (err) { next(err); }
+    });
+
+/** The customer list as a spreadsheet — personal data, so it is logged and noticed. */
+router.get("/api/parties/export.csv",
+    authenticate, requirePermission("parties.view"),
+    async (req, res, next) => {
+        try {
+            const parties = await BookingParty.find({ businessId: req.businessId }).sort({ name: 1 }).limit(10000).lean();
+            const csv = [["Name", "Mobile", "Organisation", "Type", "Email", "Location", "Bookings", "Last booking (IST)", "Internal note"]];
+            for (const p of parties) {
+                csv.push([p.name, p.phone, p.organisation, p.partyType, p.email, p.location, p.bookingCount || 0,
+                    p.lastBookingAt ? new Date(p.lastBookingAt).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", hour12: false }) : "", p.internalNote]);
+            }
+            record({ businessId: req.businessId, actor: req.actor, requestMeta: meta(req), action: "Exported the customer list", details: { rows: parties.length } });
+            notify("data.export", {
+                businessId: req.businessId, actor: req.actor, requestMeta: meta(req),
+                title: "Customer list exported", summary: "The full customer list, including mobile numbers, was downloaded as a CSV file.",
+                rows: [{ label: "Customers", value: String(parties.length) }], concern: CONCERN.data,
+            });
+            sendCsv(res, `customers-${new Date().toISOString().slice(0, 10)}`, csv);
         } catch (err) { next(err); }
     });
 

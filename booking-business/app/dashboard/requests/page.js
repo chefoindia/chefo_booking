@@ -16,12 +16,18 @@ import { formatDate, timeAgo, prettyPhone, REQUEST_TYPE_LABEL } from "@/lib/form
 import Empty from "@/components/Empty";
 import Modal from "@/components/Modal";
 import StatusBadge from "@/components/StatusBadge";
-import { Field, Textarea } from "@/components/Field";
+import Pagination from "@/components/Pagination";
+import { Field, Textarea, Input, Select } from "@/components/Field";
 
 export default function RequestsPage() {
     const access = useAccess();
     const toast = useToast();
     const [tab, setTab] = useState("pending");
+    const [filters, setFilters] = useState({ q: "", type: "", mealTypeId: "", date: "" });
+    const [page, setPage] = useState(1);
+    const [perPage, setPerPage] = useState(25);
+    const [meta, setMeta] = useState({ total: 0 });
+    const [mealTypes, setMealTypes] = useState([]);
     const [rows, setRows] = useState([]);
     const [loading, setLoading] = useState(true);
     const [decision, setDecision] = useState(null); // { request, action }
@@ -30,19 +36,32 @@ export default function RequestsPage() {
 
     const canResolve = access.can("requests.resolve");
 
+    useEffect(() => {
+        if (!access.can("config.view")) return;
+        get("/api/config").then((c) => setMealTypes(c.mealTypes || [])).catch(() => {});
+    }, [access]);
+
     const load = useCallback(async () => {
         setLoading(true);
         try {
-            const res = await get(`/api/requests?status=${tab === "pending" ? "pending" : "accepted,rejected,withdrawn"}`);
+            const qs = new URLSearchParams({ status: tab === "pending" ? "pending" : "accepted,rejected,withdrawn", page, limit: perPage });
+            Object.entries(filters).forEach(([k, v]) => { if (v) qs.set(k, v); });
+            const res = await get(`/api/requests?${qs}`);
             setRows(res.requests || []);
+            setMeta({ total: res.total || 0, page: res.page || 1, perPage: res.perPage || perPage });
         } catch (e) {
             toast("error", "Couldn't load requests", e.message);
         } finally {
             setLoading(false);
         }
-    }, [tab, toast]);
+    }, [tab, filters, page, perPage, toast]);
 
-    useEffect(() => { load(); }, [load]);
+    useEffect(() => {
+        const id = setTimeout(load, filters.q ? 300 : 0);
+        return () => clearTimeout(id);
+    }, [load, filters.q]);
+
+    const setF = (k, v) => { setFilters((f) => ({ ...f, [k]: v })); setPage(1); };
 
     // Late requests arrive while this page is open. Poll only the live queue.
     useEffect(() => {
@@ -86,13 +105,33 @@ export default function RequestsPage() {
                 </p>
             </div>
 
-            <div className="row" style={{ marginBottom: 14 }}>
+            <div className="row wrap" style={{ marginBottom: 14 }}>
                 {["pending", "resolved"].map((t) => (
-                    <button key={t} className={`btn btn-sm ${tab === t ? "btn-primary" : ""}`}
-                        onClick={() => setTab(t)}>
+                    <button key={t} className={`btn btn-sm ${tab === t ? "btn-primary" : "btn-secondary"}`}
+                        onClick={() => { setTab(t); setPage(1); }}>
                         {t === "pending" ? "Waiting" : "Decided"}
                     </button>
                 ))}
+            </div>
+
+            <div className="card card-pad" style={{ marginBottom: 14 }}>
+                <div className="filters">
+                    <Input className="input grow" placeholder="Search customer, organisation, mobile or reference" value={filters.q} onChange={(e) => setF("q", e.target.value)} />
+                    <Select value={filters.type} onChange={(e) => setF("type", e.target.value)}>
+                        <option value="">All kinds</option>
+                        {Object.entries(REQUEST_TYPE_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                    </Select>
+                    {mealTypes.length > 0 && (
+                        <Select value={filters.mealTypeId} onChange={(e) => setF("mealTypeId", e.target.value)}>
+                            <option value="">All meals</option>
+                            {mealTypes.map((m) => <option key={m._id} value={m._id}>{m.name}</option>)}
+                        </Select>
+                    )}
+                    <Input type="date" value={filters.date} onChange={(e) => setF("date", e.target.value)} aria-label="Meal date" />
+                    {(filters.q || filters.type || filters.mealTypeId || filters.date) && (
+                        <button className="btn btn-ghost btn-sm" onClick={() => { setFilters({ q: "", type: "", mealTypeId: "", date: "" }); setPage(1); }}>Clear</button>
+                    )}
+                </div>
             </div>
 
             {loading && !rows.length ? (
@@ -107,12 +146,18 @@ export default function RequestsPage() {
                     />
                 </div>
             ) : (
-                <div className="stack">
-                    {rows.map((r) => (
-                        <RequestCard key={r._id} r={r} canResolve={canResolve && tab === "pending"}
-                            onDecide={(action) => { setDecision({ request: r, action }); setNote(""); }} />
-                    ))}
-                </div>
+                <>
+                    <div className="stack">
+                        {rows.map((r) => (
+                            <RequestCard key={r._id} r={r} canResolve={canResolve && tab === "pending"}
+                                onDecide={(action) => { setDecision({ request: r, action }); setNote(""); }} />
+                        ))}
+                    </div>
+                    <div className="card" style={{ marginTop: 12 }}>
+                        <Pagination page={meta.page || page} perPage={meta.perPage || perPage} total={meta.total}
+                            onPage={setPage} onPerPage={(n) => { setPerPage(n); setPage(1); }} sizes={[10, 25, 50]} />
+                    </div>
+                </>
             )}
 
             <Modal
@@ -225,7 +270,7 @@ function RequestCard({ r, canResolve, onDecide }) {
 
                 {canResolve && (
                     <div className="row">
-                        <button className="btn btn-sm" onClick={() => onDecide("reject")}>Reject</button>
+                        <button className="btn btn-secondary btn-sm" onClick={() => onDecide("reject")}>Reject</button>
                         <button className="btn btn-sm btn-primary" onClick={() => onDecide("accept")}>Accept</button>
                     </div>
                 )}

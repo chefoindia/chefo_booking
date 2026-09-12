@@ -1,23 +1,26 @@
 // models/BusinessUser.js — someone who signs into the operator dashboard.
 //
-// WHY PASSWORD AND NOT PHONE+OTP
+// HOW PEOPLE SIGN IN
 //
-// The other Chefo products authenticate by Firebase phone OTP. This one uses a
-// password, deliberately, for two reasons:
+// The primary credential is the MOBILE NUMBER, verified by an SMS OTP through
+// Firebase — the same phone identity, on the same Firebase project, as the
+// rest of Chefo. No password is involved: proving control of the registered
+// number is what authenticates. Owners register the same way, so a phone
+// number is verified before an account exists at all.
 //
-//   1. These are business users at a counter, often sharing a back-office
-//      machine, signing in at the start of a shift — not consumers on their own
-//      phone. A password is the ordinary fit.
-//   2. It is testable end to end without an external dependency. Firebase phone
-//      auth in this project has been rate-limited and billing-gated before now,
-//      and a brand-new product whose login cannot be exercised locally is a
-//      product nobody can verify.
+// The ALTERNATIVE, offered behind a link rather than shown by default, is a
+// login ID (or email) + password. It exists for staff who share a back-office
+// machine or have no phone of their own. A password is only ever set
+// deliberately — from Settings, or through the emailed reset code — which is
+// what `passwordSet` below records.
 //
-// What is REUSED is the part that matters: the session architecture is
-// identical to the existing owner dashboard — a JWT in an httpOnly cookie,
-// sliding renewal, per-request permission resolution, owner short-circuit. The
-// credential is a detail behind that; adding OTP later means adding a second
-// way to mint the same session, not a second session system.
+// Forgotten passwords are recovered by a 4-digit code emailed to the address
+// on the account (see routes/auth.js and services/mailer.js) — which is why
+// an owner's email is required at registration.
+//
+// What is REUSED from the existing owner dashboard is the part that matters:
+// a JWT in an httpOnly cookie, sliding renewal, per-request permission
+// resolution, owner short-circuit.
 const mongoose = require("mongoose");
 
 const businessUserSchema = new mongoose.Schema(
@@ -26,14 +29,25 @@ const businessUserSchema = new mongoose.Schema(
 
         name: { type: String, required: true, trim: true },
 
-        // Either may be used to sign in. Email is the norm for a back office;
-        // phone is there because plenty of small operators do not have one.
-        email: { type: String, lowercase: true, trim: true, default: "" },
+        // Sign-in identifiers. Phone is primary (E.164, normalised at the
+        // boundary); loginId and email are the alternatives. Each is globally
+        // unique when set — the login lookup must resolve to one user.
         phone: { type: String, trim: true, default: "" },
+        email: { type: String, lowercase: true, trim: true, default: "" },
+        loginId: { type: String, lowercase: true, trim: true, default: "" },
 
         // bcrypt. Never selected by default — a route has to ask for it
         // explicitly, so no handler can leak it by returning the document.
         passwordHash: { type: String, required: true, select: false },
+
+        // Did a HUMAN choose this password?
+        //
+        // An owner who signs up with a mobile OTP never picks one, but the
+        // schema still needs a hash, so a long random value is generated and
+        // thrown away. That value is unguessable and must never be presented
+        // as a working credential: this flag is what lets Settings offer "Set
+        // a password" instead of asking for a current password nobody has.
+        passwordSet: { type: Boolean, default: true },
 
         // The business's first user. Unrestricted within their own business and
         // never limited by a role, because a role that could restrict the owner
@@ -52,14 +66,29 @@ const businessUserSchema = new mongoose.Schema(
         tokenVersion: { type: Number, default: 1 },
 
         lastLoginAt: { type: Date, default: null },
+
+        // Which activity notices this person receives by email. Keyed by the
+        // event ids in services/notify.js; a key that is absent falls back to
+        // that event's default, so adding a new event later never needs a
+        // migration. Only owners are emailed today; the field lives on the
+        // user so a co-owner can tune their own inbox.
+        notificationPrefs: { type: mongoose.Schema.Types.Mixed, default: {} },
     },
     { timestamps: true }
 );
 
-// Sparse: most users have one of the two, not both, and several may have
-// neither field populated — a null must not collide with another null.
-businessUserSchema.index({ email: 1 }, { unique: true, sparse: true, partialFilterExpression: { email: { $type: "string", $ne: "" } } });
-businessUserSchema.index({ phone: 1 }, { unique: true, sparse: true, partialFilterExpression: { phone: { $type: "string", $ne: "" } } });
+// Partial: a user may have any subset of the three identifiers, and several
+// may leave one empty — an empty string must not collide with another.
+const nonEmpty = (field) => ({ unique: true, partialFilterExpression: { [field]: { $type: "string", $ne: "" } } });
+businessUserSchema.index({ email: 1 }, nonEmpty("email"));
+businessUserSchema.index({ phone: 1 }, nonEmpty("phone"));
+businessUserSchema.index({ loginId: 1 }, nonEmpty("loginId"));
 businessUserSchema.index({ businessId: 1, isActive: 1 });
+
+// "kitchen-a", "frontdesk2": 3–32 chars, letters/digits/dot/underscore/hyphen.
+// Must not look like a phone number or an email, or the login lookup could
+// match the wrong field.
+const LOGIN_ID_RE = /^(?=.*[a-z])[a-z0-9._-]{3,32}$/;
+businessUserSchema.statics.isValidLoginId = (v) => LOGIN_ID_RE.test(String(v || "").toLowerCase());
 
 module.exports = mongoose.model("BusinessUser", businessUserSchema);

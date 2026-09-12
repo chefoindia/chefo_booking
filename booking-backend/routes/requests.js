@@ -13,6 +13,7 @@ const Booking = require("../models/Booking");
 const bookingService = require("../services/bookingService");
 const { authenticate, requirePermission } = require("../middleware/authenticate");
 const { isDateKey } = require("../utils/time");
+const { normalisePhone } = require("../utils/phone");
 
 const isId = (v) => mongoose.Types.ObjectId.isValid(String(v));
 const meta = (req) => ({ ip: req.ip, userAgent: req.headers["user-agent"] || "" });
@@ -24,23 +25,41 @@ router.get("/api/requests",
     authenticate, requirePermission("requests.view"),
     async (req, res, next) => {
         try {
-            const { status = "pending", date, mealTypeId, type, limit = "100" } = req.query;
+            const { status = "pending", date, from, to, mealTypeId, type, q, page = "1", limit = "50" } = req.query;
 
             const filter = { businessId: req.businessId };
             if (status && status !== "all") {
                 filter.status = { $in: String(status).split(",").map((s) => s.trim()).filter(Boolean) };
             }
             if (isDateKey(date)) filter.date = date;
+            else if (isDateKey(from) || isDateKey(to)) {
+                filter.date = {};
+                if (isDateKey(from)) filter.date.$gte = from;
+                if (isDateKey(to)) filter.date.$lte = to;
+            }
             if (isId(mealTypeId)) filter.mealTypeId = mealTypeId;
             if (type) filter.type = { $in: String(type).split(",").map((s) => s.trim()).filter(Boolean) };
+            if (q && String(q).trim()) {
+                const term = String(q).trim();
+                const phone = normalisePhone(term);
+                const rx = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+                filter.$or = [{ reference: rx }, { "partySnapshot.name": rx }, { "partySnapshot.organisation": rx },
+                    ...(phone ? [{ "partySnapshot.phone": phone }] : [{ "partySnapshot.phone": rx }])];
+            }
 
-            const rows = await BookingRequest.find(filter)
-                // Pending oldest-first: somebody has been waiting on an answer,
-                // and a queue that buries the longest wait is not a queue.
-                // Resolved newest-first, because that is history.
-                .sort(filter.status?.$in?.includes("pending") ? { createdAt: 1 } : { resolvedAt: -1, createdAt: -1 })
-                .limit(Math.min(parseInt(limit, 10) || 100, 300))
-                .lean();
+            const perPage = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
+            const skip = (Math.max(parseInt(page, 10) || 1, 1) - 1) * perPage;
+
+            const [rows, total] = await Promise.all([
+                BookingRequest.find(filter)
+                    // Pending oldest-first: somebody has been waiting on an answer,
+                    // and a queue that buries the longest wait is not a queue.
+                    // Resolved newest-first, because that is history.
+                    .sort(filter.status?.$in?.includes("pending") ? { createdAt: 1 } : { resolvedAt: -1, createdAt: -1 })
+                    .skip(skip).limit(perPage)
+                    .lean(),
+                BookingRequest.countDocuments(filter),
+            ]);
 
             // The booking as it stands right now, alongside what is being asked
             // of it. For a change request these differ, and seeing both is the
@@ -53,6 +72,7 @@ router.get("/api/requests",
 
             res.json({
                 requests: rows.map((r) => ({ ...r, booking: byId.get(String(r.bookingId)) || null })),
+                page: Math.floor(skip / perPage) + 1, perPage, total, hasMore: skip + rows.length < total,
                 pendingCount: await BookingRequest.countDocuments({
                     businessId: req.businessId, status: "pending",
                 }),

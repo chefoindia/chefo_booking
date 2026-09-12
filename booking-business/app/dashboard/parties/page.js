@@ -7,81 +7,119 @@
 // every morning.
 import { useCallback, useEffect, useState } from "react";
 import { get } from "@/lib/api";
+import { useAccess } from "../layout";
 import { useToast } from "@/components/ToastProvider";
 import { formatDate, prettyPhone, timeAgo } from "@/lib/format";
 import Empty from "@/components/Empty";
 import Modal from "@/components/Modal";
 import StatusBadge from "@/components/StatusBadge";
-import { Input } from "@/components/Field";
+import Pagination from "@/components/Pagination";
+import { Input, Select } from "@/components/Field";
+import { downloadFromApi } from "@/lib/download";
 
 export default function PartiesPage() {
+    const access = useAccess();
     const toast = useToast();
     const [q, setQ] = useState("");
+    const [partyType, setPartyType] = useState("");
+    const [sort, setSort] = useState("recent");
+    const [page, setPage] = useState(1);
+    const [perPage, setPerPage] = useState(50);
+    const [meta, setMeta] = useState({ total: 0 });
     const [rows, setRows] = useState([]);
     const [loading, setLoading] = useState(true);
     const [detail, setDetail] = useState(null);
+    const types = access.business?.partyTypes || [];
 
     const load = useCallback(async () => {
         setLoading(true);
         try {
-            const res = await get(`/api/parties${q.trim() ? `?q=${encodeURIComponent(q.trim())}` : ""}`);
+            const qs = new URLSearchParams({ page, limit: perPage, sort });
+            if (q.trim()) qs.set("q", q.trim());
+            if (partyType) qs.set("partyType", partyType);
+            const res = await get(`/api/parties?${qs}`);
             setRows(res.parties || []);
+            setMeta({ total: res.total || 0, page: res.page || 1, perPage: res.perPage || perPage });
         } catch (e) {
             toast("error", "Couldn't load customers", e.message);
         } finally { setLoading(false); }
-    }, [q, toast]);
+    }, [q, partyType, sort, page, perPage, toast]);
 
     useEffect(() => {
         const id = setTimeout(load, q ? 300 : 0);
         return () => clearTimeout(id);
     }, [load, q]);
 
+    const exportCsv = async () => {
+        try { await downloadFromApi("/api/parties/export.csv", "customers.csv"); toast("success", "CSV downloaded", "The full customer list. This export is recorded."); }
+        catch (e) { toast("error", "Couldn't export", e.message); }
+    };
+
     return (
         <div>
             <div className="page-head">
-                <h1 className="page-title">Customers</h1>
-                <p className="page-sub">
-                    Everyone who has booked, recognised by their mobile number.
-                </p>
+                <div>
+                    <h1 className="page-title">Customers</h1>
+                    <p className="page-sub">
+                        Everyone who has booked, recognised by their mobile number.
+                    </p>
+                </div>
+                <button className="btn btn-secondary" onClick={exportCsv} disabled={!meta.total}>Export CSV</button>
             </div>
 
             <div className="card card-pad" style={{ marginBottom: 14 }}>
-                <Input placeholder="Search name, organisation or mobile number"
-                    value={q} onChange={(e) => setQ(e.target.value)} />
+                <div className="filters">
+                    <Input className="input grow" placeholder="Search name, organisation or mobile number"
+                        value={q} onChange={(e) => { setQ(e.target.value); setPage(1); }} />
+                    <Select value={partyType} onChange={(e) => { setPartyType(e.target.value); setPage(1); }}>
+                        <option value="">All types</option>
+                        {types.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
+                    </Select>
+                    <Select value={sort} onChange={(e) => { setSort(e.target.value); setPage(1); }}>
+                        <option value="recent">Most recent first</option>
+                        <option value="bookings">Most bookings first</option>
+                        <option value="name">Name A–Z</option>
+                    </Select>
+                </div>
             </div>
 
             <div className="card">
                 {loading && !rows.length ? (
                     <div className="card-pad"><div className="sk" style={{ height: 160 }} /></div>
                 ) : !rows.length ? (
-                    <Empty title="No customers yet"
-                        note="A record is created automatically the first time somebody books." />
+                    <Empty title={q || partyType ? "No customers match" : "No customers yet"}
+                        note={q || partyType ? "Try a different search or type." : "A record is created automatically the first time somebody books."} />
                 ) : (
                     <div className="table-wrap">
                         <table className="tbl">
                             <thead>
-                                <tr><th>Name</th><th>Mobile</th><th>Organisation</th>
+                                <tr><th>Name</th><th>Mobile</th><th>Organisation</th><th>Type</th>
                                     <th className="num">Bookings</th><th>Last booking</th><th></th></tr>
                             </thead>
                             <tbody>
                                 {rows.map((p) => (
-                                    <tr key={p._id}>
-                                        <td><strong>{p.name}</strong></td>
+                                    <tr key={p._id} className="row-click" onClick={() => setDetail(p._id)}>
+                                        <td><strong>{p.name}</strong>{p.internalNote && <div className="xsmall faint">{p.internalNote}</div>}</td>
                                         <td className="mono">{prettyPhone(p.phone)}</td>
                                         <td className="small muted">{p.organisation || "—"}</td>
+                                        <td className="small muted">{types.find((t) => t.key === p.partyType)?.label || p.partyType || "—"}</td>
                                         <td className="num">{p.bookingCount || 0}</td>
                                         <td className="small muted">
                                             {p.lastBookingAt ? timeAgo(p.lastBookingAt) : "—"}
                                         </td>
                                         <td>
                                             <button className="btn btn-ghost btn-sm"
-                                                onClick={() => setDetail(p._id)}>View</button>
+                                                onClick={(e) => { e.stopPropagation(); setDetail(p._id); }}>View</button>
                                         </td>
                                     </tr>
                                 ))}
                             </tbody>
                         </table>
                     </div>
+                )}
+                {(rows.length > 0 || page > 1) && (
+                    <Pagination page={meta.page || page} perPage={meta.perPage || perPage} total={meta.total}
+                        onPage={setPage} onPerPage={(n) => { setPerPage(n); setPage(1); }} />
                 )}
             </div>
 

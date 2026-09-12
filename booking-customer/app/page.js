@@ -6,6 +6,7 @@
 // and have the bare domain resolve straight to them.
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
+import Image from "next/image";
 import { BRAND } from "@/lib/brand";
 
 export default function Home() {
@@ -21,7 +22,7 @@ export default function Home() {
     return (
         <div className="wrap">
             <div className="head">
-                <span className="head-mark">B</span>
+                <span className="head-mark"><Image src="/chefo-mark.png" alt="Chefo" width={42} height={42} /></span>
                 <div>
                     <div className="head-name">{BRAND.productName}</div>
                     <div className="head-sub">Meal bookings</div>

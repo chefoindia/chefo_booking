@@ -19,9 +19,10 @@ const MealVariant = require("../models/MealVariant");
 const Booking = require("../models/Booking");
 const BookingParty = require("../models/BookingParty");
 const BookingRequest = require("../models/BookingRequest");
+const WeeklyMenu = require("../models/WeeklyMenu");
 
 const bookingService = require("../services/bookingService");
-const { cutoffState, todayKey, shiftDateKey, isDateKey } = require("../utils/time");
+const { cutoffState, todayKey, shiftDateKey, isDateKey, weekdayOf } = require("../utils/time");
 const { normalisePhone } = require("../utils/phone");
 const { publicWriteLimiter, lookupLimiter } = require("../middleware/rateLimiters");
 
@@ -56,12 +57,17 @@ router.get("/api/public/business/:slug", async (req, res, next) => {
         const today = todayKey(tz);
         const date = isDateKey(req.query.date) ? req.query.date : today;
 
-        const [mealTypes, variants] = await Promise.all([
+        // The weekly menu for whichever weekday this date falls on — what the
+        // customer is actually choosing between, shown under each option.
+        const weekday = weekdayOf(date);
+        const [mealTypes, variants, menus] = await Promise.all([
             MealType.find({ businessId: business._id, active: true, customerBookable: true })
                 .sort({ sortOrder: 1, name: 1 }).lean(),
             MealVariant.find({ businessId: business._id, active: true })
                 .sort({ sortOrder: 1, name: 1 }).lean(),
+            WeeklyMenu.find({ businessId: business._id, weekday }).lean(),
         ]);
+        const menuByMeal = new Map(menus.map((m) => [String(m.mealTypeId), m]));
 
         const now = new Date();
         res.json({
@@ -72,6 +78,7 @@ router.get("/api/public/business/:slug", async (req, res, next) => {
                 contactPhone: business.contactPhone,
                 addressLine: business.addressLine,
                 city: business.city,
+                landmark: business.landmark,
                 acceptingBookings: business.acceptingBookings,
                 closedMessage: business.closedMessage,
                 partyTypes: (business.partyTypes || []).filter((p) => p.active),
@@ -85,9 +92,13 @@ router.get("/api/public/business/:slug", async (req, res, next) => {
             },
             date,
             today,
+            weekday,
             maxDate: shiftDateKey(today, business.rules?.maxDaysAhead ?? 14),
             mealTypes: mealTypes.map((m) => {
                 const c = cutoffState(m, date, { now, offsetMinutes: tz });
+                const menu = menuByMeal.get(String(m._id));
+                const dishesFor = (variantId) =>
+                    menu?.entries?.find((e) => String(e.variantId) === String(variantId))?.items || [];
                 return {
                     id: m._id,
                     key: m.key,
@@ -101,6 +112,11 @@ router.get("/api/public/business/:slug", async (req, res, next) => {
                     cutoffPassed: c.passed,
                     hasCutoff: c.hasCutoff,
                     cutoffAt: c.cutoffAt,
+                    // From the weekly menu. `served: false` means the kitchen
+                    // doesn't run this service that day at all.
+                    servedToday: menu ? menu.served !== false : true,
+                    menuNote: menu?.note || "",
+                    hasMenu: Boolean(menu && menu.entries?.some((e) => e.items?.length)),
                     // A variant restricted to certain meals only appears on those.
                     variants: variants
                         .filter((v) => !v.mealTypeIds?.length
@@ -108,6 +124,7 @@ router.get("/api/public/business/:slug", async (req, res, next) => {
                         .map((v) => ({
                             id: v._id, key: v.key, name: v.name,
                             price: v.price, description: v.description,
+                            dishes: dishesFor(v._id),
                         })),
                 };
             }),

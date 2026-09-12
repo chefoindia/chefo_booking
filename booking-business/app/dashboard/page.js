@@ -55,12 +55,12 @@ export default function TodayPage() {
                     </p>
                 </div>
                 <div className="row">
-                    <button className="btn btn-sm" onClick={() => setDate(shiftDate(date, -1))}>←</button>
+                    <button className="btn btn-secondary btn-sm" onClick={() => setDate(shiftDate(date, -1))}>←</button>
                     <input className="input" type="date" value={date} style={{ width: 156 }}
                         onChange={(e) => e.target.value && setDate(e.target.value)} />
-                    <button className="btn btn-sm" onClick={() => setDate(shiftDate(date, 1))}>→</button>
+                    <button className="btn btn-secondary btn-sm" onClick={() => setDate(shiftDate(date, 1))}>→</button>
                     {!isToday && (
-                        <button className="btn btn-sm" onClick={() => setDate(todayKey())}>Today</button>
+                        <button className="btn btn-secondary btn-sm" onClick={() => setDate(todayKey())}>Today</button>
                     )}
                 </div>
             </div>
@@ -190,7 +190,7 @@ function ServiceCard({ s, date }) {
 
             <div style={{ marginTop: 12 }}>
                 <Link href={`/dashboard/bookings?date=${date}&mealTypeId=${s.mealTypeId}`}
-                    className="btn btn-sm btn-block">
+                    className="btn btn-secondary btn-sm btn-block">
                     View bookings
                 </Link>
             </div>

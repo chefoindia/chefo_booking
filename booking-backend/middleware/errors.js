@@ -16,7 +16,12 @@ function errorHandler(err, req, res, _next) {
     // Restricted to 4xx on purpose: only client-facing refusals get to choose
     // their own message, so a genuine server fault can never dress itself up as
     // a handled response or leak its internals.
-    if (Number.isInteger(err?.status) && err.status >= 400 && err.status < 500) {
+    //
+    // `expose: true` is the narrow exception, for the handful of 5xx that ARE
+    // written for the person reading them — "email isn't configured", "phone
+    // sign-in is unavailable". It must be set deliberately at the throw site,
+    // so an unexpected fault still falls through to the generic 500 below.
+    if (Number.isInteger(err?.status) && err.status >= 400 && (err.status < 500 || err.expose === true)) {
         return res.status(err.status).json({
             message: err.message || "That request could not be completed.",
             code: err.code || "REQUEST",

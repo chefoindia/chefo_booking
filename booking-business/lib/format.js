@@ -34,6 +34,25 @@ export const prettyPhone = (p) => {
     return m ? `+${m[1]} ${m[2]} ${m[3]}` : s;
 };
 
+// Matches the backend's +91 convention.
+export const withCountryCode = (phone) => {
+    const p = String(phone || "").trim().replace(/\s/g, "");
+    if (p.startsWith("+")) return p;
+    return `+91${p}`;
+};
+
+export const inr = (n) =>
+    new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 })
+        .format(Number(n) || 0);
+
+// Instants (createdAt etc.), shown in IST like everything else in Chefo.
+export const fmtDate = (d) =>
+    d ? new Date(d).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Kolkata" }) : "—";
+export const fmtDateTime = (d) =>
+    d ? new Date(d).toLocaleString("en-IN", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit", timeZone: "Asia/Kolkata" }) : "—";
+
+export const titleCase = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : "");
+
 // Relative time for the approval queue — "waiting 12 min" is what tells an
 // operator which request has been sitting there.
 export function timeAgo(iso) {

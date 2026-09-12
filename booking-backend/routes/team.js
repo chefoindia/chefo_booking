@@ -20,8 +20,10 @@ const { authenticate, requirePermission, actorOf } = require("../middleware/auth
 const { MODULES, canGrant, filterGrantable } = require("../utils/permissions");
 const { normalisePhone } = require("../utils/phone");
 const { record } = require("../services/audit");
+const { notify, CONCERN } = require("../services/notify");
 
 const isId = (v) => mongoose.Types.ObjectId.isValid(String(v));
+const permList = (list) => (list?.length ? list.join(", ") : "none");
 const clean = (v, max = 80) => String(v ?? "").replace(/\s+/g, " ").trim().slice(0, max);
 const meta = (req) => ({ ip: req.ip, userAgent: req.headers["user-agent"] || "" });
 
@@ -32,6 +34,7 @@ const shapeUser = (u, role) => ({
     name: u.name,
     email: u.email || "",
     phone: u.phone || "",
+    loginId: u.loginId || "",
     isOwner: Boolean(u.isOwner),
     isActive: u.isActive !== false,
     roleId: u.roleId || null,
@@ -127,6 +130,12 @@ router.post("/api/roles",
                 businessId: req.businessId, actor: req.actor, requestMeta: meta(req),
                 action: "Created a role", after: { name, permissions: allowed },
             });
+            notify("roles.changed", {
+                businessId: req.businessId, actor: req.actor, requestMeta: meta(req),
+                title: "Role created", summary: `A new role, "${name}", was created in your team settings.`,
+                rows: [{ label: "Role", value: name }, { label: "Permissions", value: permList(allowed) }],
+                concern: CONCERN.access,
+            });
             res.status(201).json({ role });
         } catch (err) { next(err); }
     });
@@ -171,6 +180,19 @@ router.patch("/api/roles/:id",
                 businessId: req.businessId, actor: req.actor, requestMeta: meta(req),
                 action: "Updated a role",
                 before, after: { name: role.name, permissions: role.permissions },
+            });
+            const added = role.permissions.filter((p) => !before.permissions.includes(p));
+            const removed = before.permissions.filter((p) => !role.permissions.includes(p));
+            notify("roles.changed", {
+                businessId: req.businessId, actor: req.actor, requestMeta: meta(req),
+                title: "Role updated",
+                summary: `The role "${role.name}" was changed. Everyone assigned to it is affected immediately.`,
+                rows: [
+                    { label: "Role", value: role.name + (before.name !== role.name ? ` (was "${before.name}")` : "") },
+                    { label: "Permissions added", value: permList(added) },
+                    { label: "Permissions removed", value: permList(removed) },
+                ],
+                concern: CONCERN.access,
             });
             res.json({ role: role.toObject() });
         } catch (err) { next(err); }
@@ -217,6 +239,12 @@ router.post("/api/roles/:id/archive",
             record({
                 businessId: req.businessId, actor: req.actor, requestMeta: meta(req),
                 action: "Archived a role", details: { name: role.name, unassigned: assigned },
+            });
+            notify("roles.changed", {
+                businessId: req.businessId, actor: req.actor, requestMeta: meta(req),
+                title: "Role archived", summary: `The role "${role.name}" was archived and no longer grants anything.`,
+                rows: [{ label: "Role", value: role.name }, { label: "People detached", value: String(assigned) }],
+                concern: CONCERN.access,
             });
             res.json({ role: role.toObject(), unassigned: assigned });
         } catch (err) { next(err); }
@@ -268,11 +296,15 @@ router.post("/api/team",
 
             const email = clean(req.body?.email, 120).toLowerCase();
             const phone = req.body?.phone ? normalisePhone(req.body.phone) : "";
-            if (!email && !phone) {
-                return res.status(400).json({ message: "Enter an email address or a mobile number to sign in with." });
+            const loginId = clean(req.body?.loginId, 32).toLowerCase();
+            if (!email && !phone && !loginId) {
+                return res.status(400).json({ message: "Enter a mobile number, login ID or email to sign in with." });
             }
             if (req.body?.phone && !phone) {
                 return res.status(400).json({ message: "Enter a valid mobile number." });
+            }
+            if (loginId && !BusinessUser.isValidLoginId(loginId)) {
+                return res.status(400).json({ message: "A login ID is 3–32 characters: letters, numbers, dots, underscores or hyphens." });
             }
 
             const password = String(req.body?.password || "");
@@ -283,10 +315,14 @@ router.post("/api/team",
             // Sign-in identifiers are global, so this checks across businesses —
             // otherwise the login lookup would be ambiguous.
             const clash = await BusinessUser.findOne({
-                $or: [...(email ? [{ email }] : []), ...(phone ? [{ phone }] : [])],
+                $or: [
+                    ...(email ? [{ email }] : []),
+                    ...(phone ? [{ phone }] : []),
+                    ...(loginId ? [{ loginId }] : []),
+                ],
             }).select("_id").lean();
             if (clash) {
-                return res.status(409).json({ message: "That email or mobile number is already in use." });
+                return res.status(409).json({ message: "That mobile number, login ID or email is already in use." });
             }
 
             const resolved = await resolveAssignableRole(req, req.body?.roleId ?? null);
@@ -299,7 +335,7 @@ router.post("/api/team",
                 // From the session, never the body — no request can create a
                 // user in another business.
                 businessId: req.businessId,
-                name, email, phone,
+                name, email, phone, loginId,
                 passwordHash: await bcrypt.hash(password, 10),
                 // Never settable from a request. Owners are made by seeding a
                 // business, not by an API call.
@@ -312,6 +348,16 @@ router.post("/api/team",
                 businessId: req.businessId, actor: req.actor, requestMeta: meta(req),
                 action: "Added a team member",
                 after: { name, role: resolved.role?.name || "None" },
+            });
+            notify("team.added", {
+                businessId: req.businessId, actor: req.actor, requestMeta: meta(req),
+                title: "Team member added", summary: `${name} can now sign into your dashboard.`,
+                rows: [
+                    { label: "Name", value: name },
+                    { label: "Signs in with", value: [phone, loginId, email].filter(Boolean).join(" / ") },
+                    { label: "Role", value: resolved.role?.name || "None yet" },
+                ],
+                concern: CONCERN.access,
             });
             res.status(201).json({ member: shapeUser(user, resolved.role) });
         } catch (err) { next(err); }
@@ -356,7 +402,19 @@ router.patch("/api/team/:id",
                     user.phone = phone;
                 }
             }
-            if (!user.email && !user.phone) {
+            if (req.body?.loginId !== undefined) {
+                const loginId = clean(req.body.loginId, 32).toLowerCase();
+                if (loginId && !BusinessUser.isValidLoginId(loginId)) {
+                    return res.status(400).json({ message: "A login ID is 3–32 characters: letters, numbers, dots, underscores or hyphens." });
+                }
+                if (loginId !== user.loginId) {
+                    if (loginId && await BusinessUser.exists({ loginId, _id: { $ne: user._id } })) {
+                        return res.status(409).json({ message: "That login ID is already taken." });
+                    }
+                    user.loginId = loginId;
+                }
+            }
+            if (!user.email && !user.phone && !user.loginId) {
                 return res.status(400).json({ message: "Keep at least one sign-in identifier." });
             }
 
@@ -376,13 +434,16 @@ router.patch("/api/team/:id",
                 user.roleId = resolved.role?._id || null;
             }
 
+            let passwordChanged = false;
             if (req.body?.password !== undefined) {
                 const password = String(req.body.password);
                 if (password.length < 8) {
                     return res.status(400).json({ message: "Password must be at least 8 characters." });
                 }
                 user.passwordHash = await bcrypt.hash(password, 10);
+                user.passwordSet = true;
                 user.tokenVersion += 1; // ends their existing sessions
+                passwordChanged = true;
             }
 
             if (req.body?.isActive !== undefined) {
@@ -400,8 +461,32 @@ router.patch("/api/team/:id",
             record({
                 businessId: req.businessId, actor: req.actor, requestMeta: meta(req),
                 action: "Updated a team member",
-                before, after: { name: user.name, roleId: user.roleId, isActive: user.isActive },
+                before, after: { name: user.name, roleId: user.roleId, isActive: user.isActive, passwordChanged },
             });
+
+            const roleChanged = String(before.roleId || "") !== String(user.roleId || "");
+            const deactivated = before.isActive !== false && user.isActive === false;
+            const reactivated = before.isActive === false && user.isActive !== false;
+            if (deactivated) {
+                notify("team.removed", {
+                    businessId: req.businessId, actor: req.actor, requestMeta: meta(req),
+                    title: "Team member deactivated", summary: `${user.name} can no longer sign in. Their existing sessions were ended.`,
+                    rows: [{ label: "Name", value: user.name }], concern: CONCERN.access,
+                });
+            } else if (roleChanged || passwordChanged || reactivated) {
+                notify("team.changed", {
+                    businessId: req.businessId, actor: req.actor, requestMeta: meta(req),
+                    title: "Team member updated",
+                    summary: `${user.name}'s account was changed.`,
+                    rows: [
+                        { label: "Name", value: user.name },
+                        ...(roleChanged ? [{ label: "Role", value: role?.name || "None" }] : []),
+                        ...(passwordChanged ? [{ label: "Password", value: "Set to a new value" }] : []),
+                        ...(reactivated ? [{ label: "Status", value: "Reactivated" }] : []),
+                    ],
+                    concern: CONCERN.access,
+                });
+            }
             res.json({ member: shapeUser(user, role) });
         } catch (err) { next(err); }
     });
@@ -425,13 +510,19 @@ router.delete("/api/team/:id",
             user.isActive = false;
             user.roleId = null;
             user.email = "";
-            user.phone = "";  // frees the identifier for reuse
+            user.phone = "";
+            user.loginId = "";  // frees the identifiers for reuse
             user.tokenVersion += 1;
             await user.save();
 
             record({
                 businessId: req.businessId, actor: req.actor, requestMeta: meta(req),
                 action: "Removed a team member", details: { name: user.name },
+            });
+            notify("team.removed", {
+                businessId: req.businessId, actor: req.actor, requestMeta: meta(req),
+                title: "Team member removed", summary: `${user.name} was removed from the team and signed out everywhere.`,
+                rows: [{ label: "Name", value: user.name }], concern: CONCERN.access,
             });
             res.json({ removed: true });
         } catch (err) { next(err); }

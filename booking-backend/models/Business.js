@@ -85,6 +85,19 @@ const businessSchema = new mongoose.Schema(
         // two businesses can both have BK-1041 without collision. Incremented
         // atomically ($inc) when a booking is created.
         bookingCounter: { type: Number, default: 0 },
+
+        // The QR poster the owner designed (see the dashboard's QR page):
+        // theme, element positions, text. Stored as-is because it is a
+        // presentation document owned entirely by the client-side editor;
+        // the server only keeps it and hands it back.
+        qrPoster: { type: mongoose.Schema.Types.Mixed, default: null },
+
+        // WHEN THE SIGNUP WIZARD WAS FINISHED. null means the owner verified
+        // their mobile — so the tenant and the account genuinely exist — but
+        // never got past the business-details step. The dashboard sends them
+        // back to finish rather than showing an empty shell, exactly as the
+        // canteen owner portal does with businessSetupPending.
+        setupCompletedAt: { type: Date, default: null },
     },
     { timestamps: true }
 );

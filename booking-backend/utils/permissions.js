@@ -33,8 +33,16 @@ const MODULES = [
         sensitive: true,
     },
     {
+        key: "menu", label: "Weekly menu", actions: ["view", "edit"],
+        hint: "What is served each day — shown to customers on the booking page.",
+    },
+    {
+        key: "reports", label: "Reports & exports", actions: ["view", "export"],
+        hint: "Kitchen sheets, booking summaries, and downloading them as PDF or CSV.",
+    },
+    {
         key: "config", label: "Business configuration", actions: ["view", "edit"],
-        hint: "Meal services, variants, cutoff times and booking rules.",
+        hint: "Meal services, variants, cutoff times, booking rules and the QR poster.",
         owner: true,
     },
     {
@@ -45,6 +53,11 @@ const MODULES = [
     {
         key: "roles", label: "Roles", actions: ["view", "create", "edit", "delete"],
         hint: "Roles and what each one is allowed to do.",
+        owner: true,
+    },
+    {
+        key: "audit", label: "Activity log", actions: ["view", "export"],
+        hint: "The record of who did what, when. Read-only by nature.",
         owner: true,
     },
 ];

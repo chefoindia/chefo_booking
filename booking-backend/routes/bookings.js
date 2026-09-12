@@ -20,6 +20,7 @@ const { confirmedTotals, orderVariants } = require("../services/quantity");
 const { authenticate, requirePermission } = require("../middleware/authenticate");
 const { cutoffState, isDateKey } = require("../utils/time");
 const { normalisePhone } = require("../utils/phone");
+const { notify } = require("../services/notify");
 
 const meta = (req) => ({ ip: req.ip, userAgent: req.headers["user-agent"] || "" });
 const isId = (v) => mongoose.Types.ObjectId.isValid(String(v));
@@ -185,6 +186,18 @@ router.post("/api/bookings/:id/cancel",
                 actor: req.actor,
                 byOperator: true,
                 requestMeta: meta(req),
+            });
+            notify("bookings.cancelled", {
+                businessId: req.businessId, actor: req.actor, requestMeta: meta(req),
+                title: "Booking cancelled by staff",
+                summary: `Booking ${booking.reference} was cancelled from the dashboard and its meals left the preparation count.`,
+                rows: [
+                    { label: "Reference", value: booking.reference },
+                    { label: "Customer", value: booking.partySnapshot?.name || "" },
+                    { label: "Meal", value: `${booking.mealTypeName} · ${booking.date}` },
+                    { label: "Meals removed", value: String(booking.totalQuantity) },
+                    { label: "Reason", value: String(req.body?.reason || "—") },
+                ],
             });
             res.json({ booking });
         } catch (err) { next(err); }

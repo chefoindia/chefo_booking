@@ -22,8 +22,15 @@ const mongoSanitize = require("express-mongo-sanitize");
 const { connectDB } = require("./config/db");
 const { corsOptions, allowedOrigins } = require("./config/cors");
 const { BRAND } = require("./config/brand");
-const { globalLimiter, authLimiter } = require("./middleware/rateLimiters");
+const { initFirebase } = require("./config/firebaseAdmin");
+const {
+    globalLimiter, authLimiter, registerLimiter, resetLimiter, otpLimiter,
+} = require("./middleware/rateLimiters");
 const { notFound, errorHandler } = require("./middleware/errors");
+
+// Phone-OTP verification. Started before the routes so a request can never
+// arrive at a half-initialised verifier.
+initFirebase();
 
 const app = express();
 
@@ -46,6 +53,12 @@ app.get("/api/health", (req, res) =>
 // Tighter limiter on the credential endpoints specifically.
 app.use("/api/auth/login", authLimiter);
 app.use("/api/auth/change-password", authLimiter);
+app.use("/api/auth/signup/verify-otp", registerLimiter);
+app.use("/api/auth/phone/exists", otpLimiter);
+app.use("/api/auth/login/start", otpLimiter);
+app.use("/api/auth/forgot-password", resetLimiter);
+app.use("/api/auth/verify-reset-code", resetLimiter);
+app.use("/api/auth/reset-password", resetLimiter);
 
 // ---- customer surface (no auth) ----
 app.use(require("./routes/public"));
@@ -58,6 +71,9 @@ app.use(require("./routes/requests"));
 app.use(require("./routes/config"));
 app.use(require("./routes/parties"));
 app.use(require("./routes/team"));
+app.use(require("./routes/menu"));
+app.use(require("./routes/reports"));
+app.use(require("./routes/audit"));
 
 app.use(notFound);
 app.use(errorHandler);

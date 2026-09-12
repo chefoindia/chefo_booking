@@ -15,6 +15,7 @@ const Booking = require("../models/Booking");
 const { authenticate, requirePermission } = require("../middleware/authenticate");
 const { isTimeOfDay } = require("../utils/time");
 const { record } = require("../services/audit");
+const { notify, CONCERN } = require("../services/notify");
 
 const isId = (v) => mongoose.Types.ObjectId.isValid(String(v));
 const meta = (req) => ({ ip: req.ip, userAgent: req.headers["user-agent"] || "" });
@@ -91,8 +92,23 @@ router.patch("/api/config/business",
             await business.save();
             record({
                 businessId: req.businessId, actor: req.actor, requestMeta: meta(req),
-                action: "Updated business configuration",
-                before, after: { name: business.name, acceptingBookings: business.acceptingBookings },
+                action: b.rules ? "Updated booking rules" : "Updated business profile",
+                before, after: { name: business.name, acceptingBookings: business.acceptingBookings, rules: b.rules ? business.rules : undefined },
+            });
+            const stopped = before.acceptingBookings !== false && business.acceptingBookings === false;
+            notify("config.changed", {
+                businessId: req.businessId, actor: req.actor, requestMeta: meta(req),
+                title: stopped ? "Bookings switched off" : (b.rules ? "Booking rules changed" : "Business profile changed"),
+                summary: stopped
+                    ? "Customers can no longer place new bookings. Existing bookings are unaffected."
+                    : (b.rules ? "The rules governing what customers may book and change were updated." : "Details shown on your booking page were updated."),
+                rows: [
+                    { label: "Business name", value: business.name },
+                    { label: "Accepting bookings", value: business.acceptingBookings === false ? "No" : "Yes" },
+                    ...(b.rules ? [{ label: "Book up to", value: `${business.rules.maxDaysAhead} days ahead` },
+                        { label: "Max meals per booking", value: String(business.rules.maxQuantityPerBooking) }] : []),
+                ],
+                concern: CONCERN.config,
             });
             res.json({ business: business.toObject() });
         } catch (err) { next(err); }
@@ -204,6 +220,13 @@ router.delete("/api/config/meal-types/:id",
                 businessId: req.businessId, actor: req.actor, requestMeta: meta(req),
                 action: "Deactivated a meal service", details: { name: mealType.name, existingBookings: used },
             });
+            notify("config.removed", {
+                businessId: req.businessId, actor: req.actor, requestMeta: meta(req),
+                title: "Meal service deactivated",
+                summary: `"${mealType.name}" was deactivated. Customers can no longer book it; existing bookings are kept.`,
+                rows: [{ label: "Meal service", value: mealType.name }, { label: "Existing bookings kept", value: String(used) }],
+                concern: CONCERN.config,
+            });
             res.json({ mealType, deactivated: true, existingBookings: used });
         } catch (err) { next(err); }
     });
@@ -307,6 +330,12 @@ router.delete("/api/config/variants/:id",
                 businessId: req.businessId, actor: req.actor, requestMeta: meta(req),
                 action: "Deactivated a meal option", details: { name: variant.name },
             });
+            notify("config.removed", {
+                businessId: req.businessId, actor: req.actor, requestMeta: meta(req),
+                title: "Meal option deactivated",
+                summary: `"${variant.name}" was deactivated and has left the booking form.`,
+                rows: [{ label: "Option", value: variant.name }], concern: CONCERN.config,
+            });
             res.json({ variant, deactivated: true });
         } catch (err) { next(err); }
     });
@@ -348,7 +377,35 @@ router.put("/api/config/party-types",
                 businessId: req.businessId, actor: req.actor, requestMeta: meta(req),
                 action: "Updated party types", after: { partyTypes: cleaned.map((c) => c.label) },
             });
+            notify("config.changed", {
+                businessId: req.businessId, actor: req.actor, requestMeta: meta(req),
+                title: "Customer types changed", summary: "The customer types offered on the booking form were updated.",
+                rows: [{ label: "Types", value: cleaned.map((c) => `${c.label}${c.active ? "" : " (hidden)"}`).join(", ") }],
+                concern: CONCERN.config,
+            });
             res.json({ partyTypes: business.partyTypes });
+        } catch (err) { next(err); }
+    });
+
+/* ------------------------------------------------------------------ */
+/* QR POSTER                                                            */
+/* ------------------------------------------------------------------ */
+// The poster is a presentation document the dashboard's editor owns; the
+// server keeps it so the owner's layout survives a new browser. Size-capped
+// and stored as-is — it never influences any booking logic.
+router.put("/api/config/qr-poster",
+    authenticate, requirePermission("config.edit"),
+    async (req, res, next) => {
+        try {
+            const poster = req.body?.poster;
+            if (!poster || typeof poster !== "object") return res.status(400).json({ message: "Nothing to save." });
+            if (JSON.stringify(poster).length > 60_000) return res.status(413).json({ message: "That design is too large to save." });
+            await Business.updateOne({ _id: req.businessId }, { $set: { qrPoster: poster } });
+            record({
+                businessId: req.businessId, actor: req.actor, requestMeta: meta(req),
+                action: "Saved the QR poster design", details: { theme: poster.theme, elements: Object.keys(poster.elements || {}).length },
+            });
+            res.json({ ok: true });
         } catch (err) { next(err); }
     });
 

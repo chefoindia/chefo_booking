@@ -9,8 +9,10 @@ import { useSearchParams } from "next/navigation";
 import { get, post, patch } from "@/lib/api";
 import { useAccess } from "../layout";
 import { useToast } from "@/components/ToastProvider";
-import { formatDate, prettyPhone, todayKey, STATUS_LABEL, timeAgo, REQUEST_TYPE_LABEL } from "@/lib/format";
+import { formatDate, prettyPhone, todayKey, shiftDate, STATUS_LABEL, timeAgo, REQUEST_TYPE_LABEL } from "@/lib/format";
 import Empty from "@/components/Empty";
+import Pagination from "@/components/Pagination";
+import { downloadFromApi } from "@/lib/download";
 import Modal from "@/components/Modal";
 import StatusBadge from "@/components/StatusBadge";
 import { Field, Input, Select, Textarea } from "@/components/Field";
@@ -20,12 +22,19 @@ export default function BookingsPage() {
     const toast = useToast();
     const params = useSearchParams();
 
+    // `mode` decides whether the date filter is a single day or a range —
+    // one date is what the counter needs, a range is what the office needs.
     const [filters, setFilters] = useState({
+        mode: params.get("date") ? "day" : "day",
         date: params.get("date") || todayKey(),
+        from: shiftDate(todayKey(), -6), to: todayKey(),
         mealTypeId: params.get("mealTypeId") || "",
         status: "",
         q: "",
     });
+    const [page, setPage] = useState(1);
+    const [perPage, setPerPage] = useState(50);
+    const [meta, setMeta] = useState({ total: 0 });
     const [config, setConfig] = useState({ mealTypes: [], variants: [] });
     const [rows, setRows] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -40,27 +49,47 @@ export default function BookingsPage() {
         get("/api/config").then(setConfig).catch(() => {});
     }, [access]);
 
+    const query = useCallback(() => {
+        const qs = new URLSearchParams();
+        if (filters.mode === "day") { if (filters.date) qs.set("date", filters.date); }
+        else { if (filters.from) qs.set("from", filters.from); if (filters.to) qs.set("to", filters.to); }
+        if (filters.mealTypeId) qs.set("mealTypeId", filters.mealTypeId);
+        if (filters.status) qs.set("status", filters.status);
+        if (filters.q.trim()) qs.set("q", filters.q.trim());
+        return qs;
+    }, [filters]);
+
     const load = useCallback(async () => {
         setLoading(true);
         try {
-            const qs = new URLSearchParams();
-            if (filters.date) qs.set("date", filters.date);
-            if (filters.mealTypeId) qs.set("mealTypeId", filters.mealTypeId);
-            if (filters.status) qs.set("status", filters.status);
-            if (filters.q.trim()) qs.set("q", filters.q.trim());
+            const qs = query();
+            qs.set("page", page);
+            qs.set("limit", perPage);
             const res = await get(`/api/bookings?${qs}`);
             setRows(res.bookings || []);
+            setMeta({ total: res.total || 0, page: res.page || 1, perPage: res.perPage || perPage });
         } catch (e) {
             toast("error", "Couldn't load bookings", e.message);
         } finally {
             setLoading(false);
         }
-    }, [filters, toast]);
+    }, [query, page, perPage, toast]);
 
     useEffect(() => {
         const id = setTimeout(load, filters.q ? 300 : 0); // debounce typing only
         return () => clearTimeout(id);
     }, [load, filters.q]);
+
+    const setF = (patch) => { setFilters((f) => ({ ...f, ...patch })); setPage(1); };
+
+    const exportCsv = async () => {
+        try {
+            const qs = query();
+            if (filters.mode === "day") { qs.delete("date"); qs.set("from", filters.date); qs.set("to", filters.date); }
+            await downloadFromApi(`/api/reports/bookings.csv?${qs}`, "bookings.csv");
+            toast("success", "CSV downloaded", "The bookings matching these filters.");
+        } catch (e) { toast("error", "Couldn't export", e.message); }
+    };
 
     const mealName = useMemo(
         () => Object.fromEntries((config.mealTypes || []).map((m) => [String(m._id), m.name])),
@@ -74,34 +103,52 @@ export default function BookingsPage() {
                     <h1 className="page-title">Bookings</h1>
                     <p className="page-sub">Everything booked, with its full request history.</p>
                 </div>
-                {access.can("bookings.create") && (
-                    <button className="btn btn-primary" onClick={() => setCreating(true)}>
-                        + New booking
-                    </button>
-                )}
+                <div className="row wrap">
+                    {access.can("reports.export") && (
+                        <button className="btn btn-secondary" onClick={exportCsv} disabled={!rows.length}>Export CSV</button>
+                    )}
+                    {access.can("bookings.create") && (
+                        <button className="btn btn-primary" onClick={() => setCreating(true)}>
+                            + New booking
+                        </button>
+                    )}
+                </div>
             </div>
 
             <div className="card card-pad" style={{ marginBottom: 14 }}>
-                <div className="row wrap" style={{ gap: 10 }}>
-                    <Input type="date" value={filters.date} style={{ width: 156 }}
-                        onChange={(e) => setFilters((f) => ({ ...f, date: e.target.value }))} />
-                    <Select value={filters.mealTypeId} style={{ width: 150 }}
-                        onChange={(e) => setFilters((f) => ({ ...f, mealTypeId: e.target.value }))}>
+                <div className="filters">
+                    <div className="seg" style={{ marginBottom: 0 }}>
+                        <button className={filters.mode === "day" ? "on" : ""} onClick={() => setF({ mode: "day" })}>One day</button>
+                        <button className={filters.mode === "range" ? "on" : ""} onClick={() => setF({ mode: "range" })}>Date range</button>
+                    </div>
+                    {filters.mode === "day" ? (
+                        <>
+                            <button className="btn btn-secondary btn-sm" onClick={() => setF({ date: shiftDate(filters.date || todayKey(), -1) })}>←</button>
+                            <Input type="date" value={filters.date} onChange={(e) => setF({ date: e.target.value })} />
+                            <button className="btn btn-secondary btn-sm" onClick={() => setF({ date: shiftDate(filters.date || todayKey(), 1) })}>→</button>
+                            {filters.date !== todayKey() && <button className="btn btn-ghost btn-sm" onClick={() => setF({ date: todayKey() })}>Today</button>}
+                        </>
+                    ) : (
+                        <>
+                            <Input type="date" value={filters.from} onChange={(e) => setF({ from: e.target.value })} />
+                            <span className="muted">to</span>
+                            <Input type="date" value={filters.to} onChange={(e) => setF({ to: e.target.value })} />
+                        </>
+                    )}
+                    <Select value={filters.mealTypeId} onChange={(e) => setF({ mealTypeId: e.target.value })}>
                         <option value="">All meals</option>
                         {(config.mealTypes || []).map((m) => (
                             <option key={m._id} value={m._id}>{m.name}</option>
                         ))}
                     </Select>
-                    <Select value={filters.status} style={{ width: 160 }}
-                        onChange={(e) => setFilters((f) => ({ ...f, status: e.target.value }))}>
+                    <Select value={filters.status} onChange={(e) => setF({ status: e.target.value })}>
                         <option value="">All statuses</option>
                         {Object.entries(STATUS_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                     </Select>
-                    <Input placeholder="Search name, phone or reference" className="input grow"
-                        style={{ minWidth: 200 }} value={filters.q}
-                        onChange={(e) => setFilters((f) => ({ ...f, q: e.target.value }))} />
-                    <button className="btn btn-sm"
-                        onClick={() => setFilters({ date: "", mealTypeId: "", status: "", q: "" })}>
+                    <Input placeholder="Search name, mobile, organisation or reference" className="input grow" value={filters.q}
+                        onChange={(e) => setF({ q: e.target.value })} />
+                    <button className="btn btn-ghost btn-sm"
+                        onClick={() => setF({ mode: "day", date: todayKey(), mealTypeId: "", status: "", q: "" })}>
                         Clear
                     </button>
                 </div>
@@ -136,6 +183,7 @@ export default function BookingsPage() {
                                         <td className="num">{b.totalQuantity}</td>
                                         <td className="small muted">
                                             {b.lines.map((l) => `${l.quantity} ${l.variantName}`).join(" · ")}
+                                            {b.totalAmount > 0 && <div className="xsmall faint">₹{b.totalAmount.toLocaleString("en-IN")}</div>}
                                         </td>
                                         <td>
                                             <div className="row" style={{ gap: 5 }}>
@@ -156,6 +204,10 @@ export default function BookingsPage() {
                             </tbody>
                         </table>
                     </div>
+                )}
+                {(rows.length > 0 || page > 1) && (
+                    <Pagination page={meta.page || page} perPage={meta.perPage || perPage} total={meta.total}
+                        onPage={setPage} onPerPage={(n) => { setPerPage(n); setPage(1); }} />
                 )}
             </div>
 

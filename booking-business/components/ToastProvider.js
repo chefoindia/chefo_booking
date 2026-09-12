@@ -1,32 +1,32 @@
 "use client";
+// components/ToastProvider.js — app-wide toasts (bottom-right, auto-dismiss).
 import { createContext, useCallback, useContext, useState } from "react";
 
-const Ctx = createContext(() => {});
-export const useToast = () => useContext(Ctx);
+const ToastCtx = createContext(() => {});
+export const useToast = () => useContext(ToastCtx);
 
 export default function ToastProvider({ children }) {
-    const [items, setItems] = useState([]);
+    const [toasts, setToasts] = useState([]);
 
-    const toast = useCallback((kind, title, body) => {
-        const id = Math.random().toString(36).slice(2);
-        setItems((prev) => [...prev, { id, kind, title, body }]);
+    const push = useCallback((kind, title, message) => {
+        const id = Date.now() + Math.random();
+        setToasts((t) => [...t, { id, kind, title, message }]);
         // Errors linger: a failed approval is something the operator has to
         // actually read, not catch out of the corner of their eye.
-        setTimeout(() => setItems((prev) => prev.filter((t) => t.id !== id)),
-            kind === "error" ? 6000 : 3500);
+        setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), kind === "error" ? 6000 : 4200);
     }, []);
 
     return (
-        <Ctx.Provider value={toast}>
+        <ToastCtx.Provider value={push}>
             {children}
-            <div className="toast-stack">
-                {items.map((t) => (
+            <div className="toast-stack" role="status" aria-live="polite">
+                {toasts.map((t) => (
                     <div key={t.id} className={`toast toast-${t.kind}`}>
-                        <strong>{t.title}</strong>
-                        {t.body && <span className="small">{t.body}</span>}
+                        {t.title && <strong>{t.title}</strong>}
+                        {t.message}
                     </div>
                 ))}
             </div>
-        </Ctx.Provider>
+        </ToastCtx.Provider>
     );
 }
