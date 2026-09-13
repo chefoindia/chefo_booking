@@ -19,14 +19,17 @@ import { useParams } from "next/navigation";
 import { get, post } from "@/lib/api";
 import { formatDate, prettyPhone, dayWord, dayNote, relSpan } from "@/lib/format";
 import { readMe } from "@/lib/ledger";
-import { fromAccount, fromLedger, fromPhone, loadMine, splitByTime, CLOSED_STATUSES } from "@/lib/mybookings";
+import { fromLedger, fromPhone, splitByTime, CLOSED_STATUSES } from "@/lib/mybookings";
 import { useBooking } from "@/components/BookingShell";
 import Calendar, { monthOf, monthStart, monthEnd } from "@/components/Calendar";
 import BookingQr from "@/components/BookingQr";
 
+// `pending_approval` cannot happen any more — the cutoff is a wall, so nothing
+// is ever submitted for a decision. It stays in this map because bookings made
+// before that change still exist and must not be shown as confirmed.
 const STATUS = {
     confirmed: { label: "Confirmed", cls: "badge-green" },
-    pending_approval: { label: "Waiting for approval", cls: "badge-amber" },
+    pending_approval: { label: "Waiting for the canteen", cls: "badge-amber" },
     rejected: { label: "Not accepted", cls: "badge-red" },
     cancelled: { label: "Cancelled", cls: "badge-gray" },
 };
@@ -48,7 +51,7 @@ const servedWhen = (iso) => {
 
 export default function BookingsTab() {
     const { slug } = useParams();
-    const { today, maxDate, account, setAccount } = useBooking();
+    const { biz, today, maxDate, account, setAccount, mine, refreshMine, openBooking } = useBooking();
 
     const [booting, setBooting] = useState(true);
     const [source, setSource] = useState("");
@@ -73,24 +76,24 @@ export default function BookingsTab() {
 
     /* ---------------------------------------------------------- boot */
 
+    // The shell already asked. This tab only reacts to the answer, so opening
+    // it is instant rather than another two round trips.
     useEffect(() => {
-        let alive = true;
         const me = readMe() || {};
         if (me.phone) setPhone(String(me.phone));
+    }, []);
 
-        loadMine(slug)
-            .then((r) => {
-                if (!alive) return;
-                if (!r) { setAskPhone(true); return; }
-                setSource(r.source);
-                setParty(r.party);
-                setBookings(r.bookings);
-            })
-            .catch((e) => { if (alive) setError(e.message || "Could not load your bookings."); })
-            .finally(() => { if (alive) setBooting(false); });
-
-        return () => { alive = false; };
-    }, [slug]);
+    useEffect(() => {
+        if (!mine.loaded) return;
+        setBooting(false);
+        // A phone lookup done on this tab is newer than anything the shell
+        // knows, so it is not overwritten by the shared copy.
+        if (source === "phone") return;
+        if (!mine.source) { setAskPhone(true); setBookings([]); return; }
+        setSource(mine.source);
+        setParty(mine.party);
+        setBookings(mine.bookings);
+    }, [mine, source]);
 
     useEffect(() => { setMonth(monthOf(today)); }, [today]);
 
@@ -119,14 +122,18 @@ export default function BookingsTab() {
     // Re-reads from whichever source found these bookings in the first place.
     const reload = useCallback(async () => {
         try {
-            const r = source === "account" ? await fromAccount(slug)
-                : source === "phone" ? await fromPhone(slug, phone)
-                    : await fromLedger(slug);
-            if (r) { setParty(r.party); setBookings(r.bookings); }
+            // A phone lookup belongs to this tab; everything else is the shared
+            // copy, so refreshing it updates Home at the same time.
+            if (source === "phone") {
+                const r = await fromPhone(slug, phone);
+                if (r) { setParty(r.party); setBookings(r.bookings); }
+                return;
+            }
+            await refreshMine();
         } catch (e) {
             setError(e.message || "Could not refresh your bookings.");
         }
-    }, [source, slug, phone]);
+    }, [source, slug, phone, refreshMine]);
 
     /* ---------------------------------------------------------- actions */
 
@@ -169,7 +176,7 @@ export default function BookingsTab() {
             // happened rather than left to infer it from a status word.
             setNotice(res.applied
                 ? "That booking is cancelled."
-                : "Booking had already closed, so your cancellation has gone to the canteen as a request. You're still counted until they accept it.");
+                : "Booking has closed for this meal, so it can't be cancelled here any more. Speak to the canteen.");
             setConfirmCancel("");
             await reload();
         } catch (err) {
@@ -188,7 +195,7 @@ export default function BookingsTab() {
                 { phone: p, quantities: editing?.qty || {} });
             setNotice(res.applied
                 ? "Your booking has been updated."
-                : "Booking had already closed, so your change has gone to the canteen as a request.");
+                : "Booking has closed for this meal, so it can't be changed here any more. Speak to the canteen.");
             setEditing(null);
             await reload();
         } catch (err) {
@@ -231,6 +238,7 @@ export default function BookingsTab() {
             key={b.id}
             b={b}
             today={today}
+            businessName={biz?.name || ""}
             acting={acting === b.id}
             qrOpen={qrFor === b.id}
             onQr={() => setQrFor(qrFor === b.id ? "" : b.id)}
@@ -266,9 +274,10 @@ export default function BookingsTab() {
                     today={today} maxDate={maxDate} dayState={dayState} marks={marks}
                 />
                 <div className="btn-row" style={{ marginTop: 12 }}>
-                    <Link href={`/b/${slug}/book${pick ? `?date=${pick}` : ""}`} className="btn btn-primary btn-sm">
+                    <button className="btn btn-primary btn-sm"
+                        onClick={() => openBooking({ date: pick || today })}>
                         {pick ? `Book ${dayWord(pick, today)}` : "Book a meal"}
-                    </Link>
+                    </button>
                     {pick && (
                         <button className="btn btn-sm" onClick={() => setPick("")}>Show all days</button>
                     )}
@@ -311,9 +320,10 @@ export default function BookingsTab() {
                                     ? "No bookings found for that number at this canteen."
                                     : "Nothing booked here yet."}
                             </p>
-                            <Link href={`/b/${slug}/book`} className="btn" style={{ marginTop: 12 }}>
+                            <button className="btn" style={{ marginTop: 12 }}
+                                onClick={() => openBooking({ date: today })}>
                                 Make a booking
-                            </Link>
+                            </button>
                         </div>
                     )}
 
@@ -358,7 +368,7 @@ export default function BookingsTab() {
 /* ---------------------------------------------------------------- card */
 
 function BookingCard({
-    b, today, acting, qrOpen, onQr, editing, onEdit, onEditQty, onEditCancel, onEditSave,
+    b, today, businessName, acting, qrOpen, onQr, editing, onEdit, onEditQty, onEditCancel, onEditSave,
     confirming, onAskCancel, onKeep, onCancel,
 }) {
     const s = STATUS[b.status] || STATUS.confirmed;
@@ -367,11 +377,11 @@ function BookingCard({
 
     // The deadline, said once per booking, in the tense it belongs in: still
     // ahead means "you can change this yourself until then"; already gone means
-    // "anything you do now is a request".
+    // the booking is final and anything else is a conversation at the counter.
     const cutAt = b.cutoffAt ? new Date(b.cutoffAt).getTime() : null;
     const cutLine = !b.cutoffAt ? ""
         : b.cutoffPassed
-            ? `Booking closed ${relSpan(Date.now() - cutAt)} ago — changes now go to the canteen as a request.`
+            ? `Booking closed ${relSpan(Date.now() - cutAt)} ago, so this is final now. Speak to the canteen if anything has to change.`
             : `You can change or cancel this yourself for another ${relSpan(cutAt - Date.now())}.`;
 
     return (
@@ -403,7 +413,7 @@ function BookingCard({
                     </span>
                     <div className="bk-act">
                         <button className="btn btn-primary btn-sm" disabled={acting} onClick={onEditSave}>
-                            {acting ? "Sending…" : b.cutoffPassed ? "Send change request" : "Save the change"}
+                            {acting ? "Saving…" : "Save the change"}
                         </button>
                         <button className="btn btn-sm" disabled={acting} onClick={onEditCancel}>
                             Leave it as it is
@@ -451,19 +461,19 @@ function BookingCard({
                 <div className="bk-act">
                     {b.ticket && !closed && (
                         <button className="btn btn-sm" onClick={onQr}>
-                            {qrOpen ? "Hide code" : "Show QR"}
+                            {qrOpen ? "Hide pass" : "Show pass"}
                         </button>
                     )}
                     {/* canEdit / canCancel are the SERVER's answer. This page
                         never works out whether a cutoff has passed. */}
                     {b.canEdit && !confirming && (
                         <button className="btn btn-sm" disabled={acting} onClick={onEdit}>
-                            {b.cutoffPassed ? "Request a change" : "Change"}
+                            Change
                         </button>
                     )}
                     {b.canCancel && !confirming && (
                         <button className="btn btn-sm" disabled={acting} onClick={onAskCancel}>
-                            {b.cutoffPassed ? "Request cancellation" : "Cancel"}
+                            Cancel
                         </button>
                     )}
                 </div>
@@ -472,14 +482,13 @@ function BookingCard({
             {confirming && (
                 <div className="bk-edit">
                     <p className="small muted">
-                        {b.cutoffPassed
-                            ? "Booking has already closed for this meal, so the canteen has to accept the cancellation. Send it?"
-                            : "Cancel this booking? It can't be undone — you'd have to book again."}
+                        Cancel this booking? It can&apos;t be undone — you&apos;d have to book again,
+                        and only before the deadline.
                     </p>
                     <div className="bk-act">
                         <button className="btn btn-sm" disabled={acting} onClick={onCancel}
                             style={{ borderColor: "var(--brick)", color: "var(--brick)" }}>
-                            {acting ? "Sending…" : b.cutoffPassed ? "Send the request" : "Yes, cancel it"}
+                            {acting ? "Cancelling…" : "Yes, cancel it"}
                         </button>
                         <button className="btn btn-sm" disabled={acting} onClick={onKeep}>
                             Keep it
@@ -490,14 +499,8 @@ function BookingCard({
 
             {qrOpen && b.ticket && (
                 <div className="bk-qr">
-                    <BookingQr ticket={b.ticket} reference={b.reference} />
-                </div>
-            )}
-
-            {b.openRequest && (
-                <div className="notice notice-warn" style={{ marginTop: 10 }}>
-                    Your {REQUEST_LABEL[b.openRequest.type]?.toLowerCase() || "request"} is with
-                    the canteen. They&apos;ll accept or decline it.
+                    <BookingQr ticket={b.ticket} reference={b.reference}
+                        booking={b} businessName={businessName} />
                 </div>
             )}
 

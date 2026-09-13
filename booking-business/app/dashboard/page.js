@@ -50,8 +50,8 @@ export default function TodayPage() {
                 <div>
                     <h1 className="page-title">{isToday ? "Today" : formatDate(date, { year: true })}</h1>
                     <p className="page-sub">
-                        What the kitchen needs to prepare. Confirmed counts only — pending
-                        requests are listed separately until you decide on them.
+                        What the kitchen needs to prepare. One confirmed number per
+                        service — nothing is waiting on a decision any more.
                     </p>
                 </div>
                 <div className="row">
@@ -86,12 +86,6 @@ export default function TodayPage() {
                     <div className="row wrap" style={{ gap: 14, marginBottom: 16 }}>
                         <SummaryTile label="Meals to prepare" value={data.totals.confirmedQuantity} strong />
                         <SummaryTile label="Confirmed bookings" value={data.totals.bookings} />
-                        <SummaryTile
-                            label="Awaiting your decision"
-                            value={data.totals.pendingRequests}
-                            tone={data.totals.pendingRequests > 0 ? "amber" : undefined}
-                            href={data.totals.pendingRequests > 0 ? "/dashboard/requests" : undefined}
-                        />
                     </div>
 
                     <div className="svc-grid">
@@ -162,29 +156,14 @@ function ServiceCard({ s, date }) {
                 ))}
             </div>
 
-            {(s.pending.count > 0 || s.lateAccepted.quantity > 0) && (
-                <div style={{ marginTop: 12, paddingTop: 11, borderTop: "1px solid var(--border)" }}>
-                    {s.pending.count > 0 && (
-                        <Link href="/dashboard/requests" className="row-between"
-                            style={{ marginBottom: s.lateAccepted.quantity > 0 ? 7 : 0 }}>
-                            <span className="small" style={{ color: "var(--turmeric)", fontWeight: 650 }}>
-                                {s.pending.count} awaiting decision
-                            </span>
-                            <span className="small mono" style={{ color: "var(--turmeric)" }}>
-                                {s.pending.quantityDelta >= 0 ? "+" : ""}{s.pending.quantityDelta} meals
-                            </span>
-                        </Link>
-                    )}
-                    {s.lateAccepted.quantity > 0 && (
-                        // Surfaced on its own because it is the number that tells
-                        // an operator whether their cutoff is set at the right
-                        // time — a meal taking 40 late plates daily has a cutoff
-                        // problem, not a discipline problem.
-                        <div className="row-between">
-                            <span className="xsmall faint">Accepted after cutoff</span>
-                            <span className="xsmall faint mono">{s.lateAccepted.quantity} meals</span>
-                        </div>
-                    )}
+            {/* Surfaced on its own because it is the number that tells an
+                operator whether their cutoff is set at the right time — a meal
+                taking 40 late plates daily has a cutoff problem, and now that
+                lateness is a wall, that is a setting to move. */}
+            {s.lateAccepted.quantity > 0 && (
+                <div className="row-between" style={{ marginTop: 12, paddingTop: 11, borderTop: "1px solid var(--border)" }}>
+                    <span className="xsmall faint">Taken at the counter after cutoff</span>
+                    <span className="xsmall faint mono">{s.lateAccepted.quantity} meals</span>
                 </div>
             )}
 

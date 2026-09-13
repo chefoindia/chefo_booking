@@ -20,11 +20,14 @@ export const canAny = (access, perms = []) =>
 // into the icon set in components/Sidebar.js. `section` groups the sidebar.
 export const NAV = [
     { key: "dashboard", label: "Today", href: "/dashboard", exact: true, icon: "overview", perms: ["dashboard.view"], section: "Operate" },
-    { key: "requests", label: "Approvals", href: "/dashboard/requests", icon: "requests", perms: ["requests.view"], section: "Operate" },
+    // There is no Approvals item, and no approvals anywhere: past the deadline
+    // a customer simply cannot book, change or cancel, so nothing is ever
+    // waiting on a decision. Late arrangements are entered at the counter.
     { key: "bookings", label: "Bookings", href: "/dashboard/bookings", icon: "bookings", perms: ["bookings.view"], section: "Operate" },
-    // Only bookings.view to OPEN it — looking a booking up is reading. Marking
-    // one served needs bookings.consume, and that gate lives on the button.
-    { key: "scan", label: "Scan", href: "/dashboard/scan", icon: "scan", perms: ["bookings.view"], section: "Operate" },
+    // `scan.use` alone is a complete job: open the scanner, find the booking
+    // whose code is in your hand, mark it served. `bookings.view` also opens it
+    // because anyone who can see bookings can obviously look one up.
+    { key: "scan", label: "Scan", href: "/dashboard/scan", icon: "scan", perms: ["scan.use", "bookings.view"], section: "Operate" },
     { key: "parties", label: "Customers", href: "/dashboard/parties", icon: "customers", perms: ["parties.view"], section: "Operate" },
     { key: "menu", label: "Weekly menu", href: "/dashboard/menu", icon: "menu", perms: ["menu.view"], section: "Kitchen" },
     { key: "reports", label: "Reports", href: "/dashboard/reports", icon: "reports", perms: ["reports.view"], section: "Kitchen" },

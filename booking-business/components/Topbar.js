@@ -13,7 +13,7 @@ function MenuIcon() {
 }
 
 export default function Topbar({
-    businessName, accepting, canChangeStatus, statusBusy, onStatusChange, pendingCount = 0, onMenuClick,
+    businessName, accepting, canChangeStatus, statusBusy, onStatusChange, onMenuClick,
 }) {
     return (
         <header className="topbar">
@@ -24,11 +24,6 @@ export default function Topbar({
                 <span className="topbar-name" title={businessName}>{businessName || "—"}</span>
             </div>
             <div className="topbar-actions">
-                {pendingCount > 0 && (
-                    <Link href="/dashboard/requests" className="topbar-pending">
-                        {pendingCount} awaiting approval
-                    </Link>
-                )}
                 <label className="small muted topbar-status-label" htmlFor="booking-status">Bookings</label>
                 {canChangeStatus ? (
                     <select

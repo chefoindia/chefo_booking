@@ -43,13 +43,13 @@ const businessSchema = new mongoose.Schema(
             // fat finger turning into 5,000 plates. Operators can raise it.
             maxQuantityPerBooking: { type: Number, default: 500, min: 1 },
             // Before cutoff, may the customer amend / cancel their own booking?
-            // After cutoff these become approval requests regardless — that is
-            // the product's core rule and is NOT configurable.
+            // AFTER the cutoff they never can — that is the product's core rule
+            // and is NOT configurable.
             allowCustomerEditBeforeCutoff: { type: Boolean, default: true },
             allowCustomerCancelBeforeCutoff: { type: Boolean, default: true },
-            // After cutoff, may the customer raise change / cancellation
-            // requests at all? Turning these off makes a confirmed booking
-            // final once the cutoff passes.
+            // DEAD, kept so existing documents still validate. They used to
+            // gate after-cutoff change / cancellation REQUESTS, and there are
+            // no requests any more. Nothing reads them.
             allowCustomerChangeRequestAfterCutoff: { type: Boolean, default: true },
             allowCustomerCancelRequestAfterCutoff: { type: Boolean, default: true },
             // Which customer fields the booking form demands. Name and phone

@@ -1,16 +1,24 @@
 "use client";
 // components/Sidebar.js — primary navigation, same shell as the Chefo owner
 // dashboard. Items come from lib/permissions.js NAV, filtered by what THIS
-// person may open, and grouped under small section headings so ten links
-// still read as four ideas. Presentation only: every destination is also
-// enforced by the API.
+// person may open, and grouped under sections. Presentation only: every
+// destination is also enforced by the API.
+//
+// The sections COLLAPSE. Ten links under four headings is still ten links to
+// read past, and on a counter tablet most of them are opened once a month —
+// Weekly menu, Team, Settings. Operate is where somebody lives all day, so a
+// section stays open when it holds the page you are on, and whatever you open
+// or close is remembered on that device.
 //
 // Below 860px the sidebar is an off-screen drawer opened via the Topbar's
 // hamburger and closed via the close button, the backdrop, or navigating.
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { visibleNav } from "@/lib/permissions";
+
+const OPEN_KEY = "chefo-booking-nav-open";
 
 // Inline SVG icons, keyed by nav item icon. 18px, inherit currentColor.
 const ICONS = {
@@ -36,10 +44,46 @@ function NavIcon({ name }) {
     );
 }
 
-export default function Sidebar({ access, user, pendingCount = 0, onLogout, open, onClose }) {
+const isActive = (item, pathname) =>
+    item.exact ? pathname === item.href : pathname.startsWith(item.href);
+
+export default function Sidebar({ access, user, onLogout, open, onClose }) {
     const pathname = usePathname();
     const nav = visibleNav(access);
     const sections = [...new Set(nav.map((n) => n.section))];
+
+    // null until the device has been asked, so the first paint never collapses
+    // a section the operator had left open.
+    const [openSections, setOpenSections] = useState(null);
+
+    useEffect(() => {
+        let saved = null;
+        try {
+            const raw = localStorage.getItem(OPEN_KEY);
+            if (raw) saved = JSON.parse(raw);
+        } catch { /* private mode — the default below is used every visit */ }
+        setOpenSections(saved && typeof saved === "object" ? saved : {});
+    }, []);
+
+    const toggle = (section) => {
+        setOpenSections((prev) => {
+            const next = { ...(prev || {}), [section]: !sectionOpen(section, prev) };
+            try { localStorage.setItem(OPEN_KEY, JSON.stringify(next)); }
+            catch { /* not worth telling anybody about */ }
+            return next;
+        });
+    };
+
+    // A section is open when it was left open, and ALWAYS when it holds the
+    // page currently on screen — a collapsed section hiding the active link
+    // would leave the sidebar with nothing highlighted.
+    function sectionOpen(section, state = openSections) {
+        const holdsActive = nav.some((n) => n.section === section && isActive(n, pathname));
+        if (holdsActive) return true;
+        if (state && Object.prototype.hasOwnProperty.call(state, section)) return Boolean(state[section]);
+        // First visit: the section people work in stays open, the rest fold away.
+        return section === "Operate";
+    }
 
     return (
         <nav className={`sidebar ${open ? "open" : ""}`} aria-label="Dashboard navigation">
@@ -57,23 +101,35 @@ export default function Sidebar({ access, user, pendingCount = 0, onLogout, open
             </div>
 
             <div className="sidebar-nav">
-                {sections.map((section) => (
-                    <div key={section} className="side-section">
-                        {sections.length > 1 && <div className="side-section-title">{section}</div>}
-                        {nav.filter((n) => n.section === section).map((item) => {
-                            const active = item.exact ? pathname === item.href : pathname.startsWith(item.href);
-                            return (
-                                <Link key={item.key} href={item.href} className={`side-link ${active ? "active" : ""}`}>
+                {sections.map((section) => {
+                    const items = nav.filter((n) => n.section === section);
+                    const isOpen = sectionOpen(section);
+                    return (
+                        <div key={section} className="side-section">
+                            {sections.length > 1 && (
+                                <button type="button"
+                                    className={`side-section-title ${isOpen ? "open" : ""}`}
+                                    aria-expanded={isOpen}
+                                    onClick={() => toggle(section)}>
+                                    <svg className="side-caret" width="11" height="11" viewBox="0 0 24 24"
+                                        fill="none" stroke="currentColor" strokeWidth="3"
+                                        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                        <polyline points="9 6 15 12 9 18" />
+                                    </svg>
+                                    <span>{section}</span>
+                                </button>
+                            )}
+
+                            {isOpen && items.map((item) => (
+                                <Link key={item.key} href={item.href}
+                                    className={`side-link ${isActive(item, pathname) ? "active" : ""}`}>
                                     <NavIcon name={item.icon} />
                                     <span className="side-link-label">{item.label}</span>
-                                    {item.key === "requests" && pendingCount > 0 && (
-                                        <span className="badge badge-amber">{pendingCount}</span>
-                                    )}
                                 </Link>
-                            );
-                        })}
-                    </div>
-                ))}
+                            ))}
+                        </div>
+                    );
+                })}
             </div>
 
             <div className="sidebar-foot">

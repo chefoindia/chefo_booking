@@ -27,7 +27,6 @@ export default function DashboardLayout({ children }) {
     const [state, setState] = useState(null);
     const [ready, setReady] = useState(false);
     const [navOpen, setNavOpen] = useState(false);
-    const [pendingCount, setPendingCount] = useState(0);
     const [statusBusy, setStatusBusy] = useState(false);
 
     const load = useCallback(async () => {
@@ -51,23 +50,9 @@ export default function DashboardLayout({ children }) {
 
     const access = state ? { isOwner: state.user.isOwner, permissions: state.permissions } : null;
 
-    // The approval queue is the one thing an operator must not miss, so its
-    // count lives in the shell and refreshes on a timer rather than only when
-    // somebody happens to open that page.
-    const refreshPending = useCallback(() => {
-        if (!access || !can(access, "requests.view")) return Promise.resolve();
-        return get("/api/requests?status=pending&limit=1")
-            .then((r) => setPendingCount(r.pendingCount || 0))
-            .catch(() => {});
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [state]);
-
-    useEffect(() => {
-        if (!ready) return;
-        refreshPending();
-        const id = setInterval(refreshPending, 30_000);
-        return () => clearInterval(id);
-    }, [ready, refreshPending, pathname]);
+    // There used to be a polled approval count here. There is no approval
+    // queue any more — past the deadline a customer cannot act at all — so the
+    // shell has nothing to watch for.
 
     // Close the mobile drawer on every navigation.
     useEffect(() => { setNavOpen(false); }, [pathname]);
@@ -117,14 +102,14 @@ export default function DashboardLayout({ children }) {
             can: (p) => can(access, p),
             canAny: (ps) => canAny(access, ps),
             reload: load,
-            pendingCount,
-            refreshPending,
+            // Kept as a no-op so the pages that called it after acting on a
+            // booking do not each need editing to say "nothing to refresh".
+            refreshPending: () => {},
         }}>
             <div className="shell">
                 <Sidebar
                     access={access}
                     user={state.user}
-                    pendingCount={pendingCount}
                     onLogout={logout}
                     open={navOpen}
                     onClose={() => setNavOpen(false)}
@@ -138,7 +123,6 @@ export default function DashboardLayout({ children }) {
                         canChangeStatus={can(access, "config.edit")}
                         statusBusy={statusBusy}
                         onStatusChange={changeStatus}
-                        pendingCount={pendingCount}
                         onMenuClick={() => setNavOpen(true)}
                     />
                     <main className="content">

@@ -89,11 +89,22 @@ async function main() {
     });
     const viewRole = await Role.create({
         businessId: business._id, name: "ZZ Viewer",
-        permissions: ["dashboard.view", "bookings.view", "requests.view"],
+        permissions: ["dashboard.view", "bookings.view", "menu.view"],
     });
     const viewer = await BusinessUser.create({
         businessId: business._id, name: "ZZ Viewer User", email: "zzviewer@test.local",
         passwordHash: await bcrypt.hash("password123", 10), roleId: viewRole._id,
+    });
+
+    // The role a real canteen actually has: one person at the hatch whose
+    // entire job is the scanner. ONE permission, and it must be enough.
+    const scanRole = await Role.create({
+        businessId: business._id, name: "ZZ Counter",
+        permissions: ["scan.use"],
+    });
+    const scanner = await BusinessUser.create({
+        businessId: business._id, name: "ZZ Counter Staff", email: "zzcounter@test.local",
+        passwordHash: await bcrypt.hash("password123", 10), roleId: scanRole._id,
     });
 
     /* ---------- harness app: the REAL routers ---------- */
@@ -170,48 +181,34 @@ async function main() {
         JSON.stringify(t.byVariant));
 
     /* ================= SCENARIO B ================= */
-    section("B — late booking is pending, then accepted");
-    const b = await bookingService.createBooking({
-        businessId: business._id, mealTypeId: lunch._id, date: D,
-        quantities: qty({ [veg._id]: 7, [nonVeg._id]: 8 }),
-        party: party("Late Co", "9800000002"),
-        now: AFTER,
-    });
-    check("status is pending_approval", b.booking.status === "pending_approval", b.booking.status);
-    check("a new_booking request was raised", b.request?.type === "new_booking");
-    check("request delta is +15", b.request?.quantityDelta === 15, String(b.request?.quantityDelta));
+    section("B — a late booking is REFUSED, not queued");
+    // The cutoff is a wall for customers. There is no pending state, no queue
+    // and nothing to wait on: the kitchen was promised a number at 10:30 and
+    // anybody arriving after that arranges it at the counter.
+    let refused = null;
+    try {
+        await bookingService.createBooking({
+            businessId: business._id, mealTypeId: lunch._id, date: D,
+            quantities: qty({ [veg._id]: 7, [nonVeg._id]: 8 }),
+            party: party("Late Co", "9800000002"),
+            now: AFTER,
+        });
+    } catch (err) { refused = err; }
+    check("a late customer booking throws", Boolean(refused));
+    check("refused with CUTOFF_PASSED", refused?.code === "CUTOFF_PASSED", refused?.code);
+    check("the refusal says when it closed", /10:30/.test(refused?.message || ""), refused?.message);
+    check("nothing was written", (await Booking.countDocuments({
+        businessId: business._id, "partySnapshot.phone": "+919800000002",
+    })) === 0);
     t = await totals();
     check("operational quantity UNCHANGED at 15", t.totalQuantity === 15, String(t.totalQuantity));
 
-    await bookingService.resolveRequest({
-        businessId: business._id, requestId: b.request._id, decision: "accept",
-        actor: { userId: owner._id, name: owner.name }, now: AFTER,
-    });
-    const bAfter = await Booking.findById(b.booking._id).lean();
-    check("accepted -> confirmed", bAfter.status === "confirmed", bAfter.status);
-    t = await totals();
-    check("operational quantity now 30", t.totalQuantity === 30, String(t.totalQuantity));
-    check("still flagged as submitted late", bAfter.submittedAfterCutoff === true);
-
     /* ================= SCENARIO C ================= */
-    section("C — late booking rejected");
-    const c = await bookingService.createBooking({
-        businessId: business._id, mealTypeId: lunch._id, date: D,
-        quantities: qty({ [veg._id]: 5 }),
-        party: party("Rejected Co", "9800000003"),
-        now: AFTER,
-    });
-    await bookingService.resolveRequest({
-        businessId: business._id, requestId: c.request._id, decision: "reject",
-        note: "Kitchen already closed", actor: { userId: owner._id, name: owner.name }, now: AFTER,
-    });
-    const cAfter = await Booking.findById(c.booking._id).lean();
-    check("rejected -> status rejected", cAfter.status === "rejected", cAfter.status);
-    t = await totals();
-    check("operational quantity still 30", t.totalQuantity === 30, String(t.totalQuantity));
-    const cReq = await BookingRequest.findById(c.request._id).lean();
-    check("rejection reason retained", cReq.resolutionNote === "Kitchen already closed");
-    check("resolver recorded", String(cReq.resolvedByUserId) === String(owner._id));
+    section("C — no pending booking can exist any more");
+    const anyPending = await Booking.countDocuments({ businessId: business._id, status: "pending_approval" });
+    check("no booking is awaiting approval", anyPending === 0, String(anyPending));
+    const anyRequest = await BookingRequest.countDocuments({ businessId: business._id });
+    check("no request was raised at all", anyRequest === 0, String(anyRequest));
 
     /* ================= SCENARIO D ================= */
     section("D — change before cutoff applies directly");
@@ -224,47 +221,38 @@ async function main() {
     check("no request created", d.request === null);
     check("booking total is 15", d.booking.totalQuantity === 15, String(d.booking.totalQuantity));
     t = await totals();
-    check("veg now 12 across bookings", t.byVariant[String(veg._id)].quantity === 12,
+    check("veg now 5 across bookings", t.byVariant[String(veg._id)].quantity === 5,
         String(t.byVariant[String(veg._id)]?.quantity));
 
     /* ================= SCENARIO E ================= */
-    section("E — change after cutoff leaves the booking untouched");
+    section("E — a change after cutoff is refused and the booking is untouched");
     const beforeLines = JSON.stringify((await Booking.findById(a.booking._id).lean()).lines);
-    const e = await bookingService.changeBooking({
-        businessId: business._id, bookingId: a.booking._id,
-        quantities: qty({ [veg._id]: 20, [nonVeg._id]: 20 }),
-        now: AFTER,
-    });
-    check("not applied", e.applied === false);
-    check("change request raised", e.request?.type === "change");
-    check("delta is +25", e.request?.quantityDelta === 25, String(e.request?.quantityDelta));
-    check("BEFORE state captured on the request", e.request.currentTotal === 15, String(e.request.currentTotal));
+    let changeErr = null;
+    try {
+        await bookingService.changeBooking({
+            businessId: business._id, bookingId: a.booking._id,
+            quantities: qty({ [veg._id]: 20, [nonVeg._id]: 20 }),
+            now: AFTER,
+        });
+    } catch (err) { changeErr = err; }
+    check("refused with CUTOFF_PASSED", changeErr?.code === "CUTOFF_PASSED", changeErr?.code);
     const aMid = await Booking.findById(a.booking._id).lean();
     check("original booking bytes unchanged", JSON.stringify(aMid.lines) === beforeLines);
     check("original still confirmed", aMid.status === "confirmed");
+    check("no request was created for it",
+        (await BookingRequest.countDocuments({ bookingId: a.booking._id })) === 0);
     t = await totals();
-    check("operational quantity unchanged at 30", t.totalQuantity === 30, String(t.totalQuantity));
+    check("operational quantity unchanged at 15", t.totalQuantity === 15, String(t.totalQuantity));
 
-    await bookingService.resolveRequest({
-        businessId: business._id, requestId: e.request._id, decision: "accept",
-        actor: { userId: owner._id, name: owner.name }, now: AFTER,
-    });
-    const aAfter = await Booking.findById(a.booking._id).lean();
-    check("accepted change applied", aAfter.totalQuantity === 40, String(aAfter.totalQuantity));
-    t = await totals();
-    check("operational quantity now 55", t.totalQuantity === 55, String(t.totalQuantity));
-
-    // ... and a rejected change must leave everything alone.
-    const e2 = await bookingService.changeBooking({
+    // An OPERATOR is never subject to the wall: the person entering it is the
+    // decision, which is the whole reason the queue could be removed.
+    const opChange = await bookingService.changeBooking({
         businessId: business._id, bookingId: a.booking._id,
-        quantities: qty({ [veg._id]: 1 }), now: AFTER,
+        quantities: qty({ [veg._id]: 5, [nonVeg._id]: 10 }),
+        byOperator: true, actor: { userId: owner._id, name: owner.name }, now: AFTER,
     });
-    await bookingService.resolveRequest({
-        businessId: business._id, requestId: e2.request._id, decision: "reject",
-        actor: { userId: owner._id, name: owner.name }, now: AFTER,
-    });
-    const aAfter2 = await Booking.findById(a.booking._id).lean();
-    check("rejected change leaves booking at 40", aAfter2.totalQuantity === 40, String(aAfter2.totalQuantity));
+    check("operator change applies after cutoff", opChange.applied === true);
+    check("and it is a direct edit, not a request", opChange.request === null);
 
     /* ================= SCENARIO F ================= */
     section("F — cancel before cutoff drops the count immediately");
@@ -274,51 +262,44 @@ async function main() {
         party: party("Cancel Co", "9800000004"), now: BEFORE,
     });
     t = await totals();
-    check("count rose to 59", t.totalQuantity === 59, String(t.totalQuantity));
+    check("count rose to 19", t.totalQuantity === 19, String(t.totalQuantity));
     const fc = await bookingService.cancelBooking({
         businessId: business._id, bookingId: f.booking._id, now: BEFORE,
     });
     check("applied immediately", fc.applied === true);
     check("status cancelled", fc.booking.status === "cancelled");
     t = await totals();
-    check("count back to 55", t.totalQuantity === 55, String(t.totalQuantity));
+    check("count back to 15", t.totalQuantity === 15, String(t.totalQuantity));
 
     /* ================= SCENARIO G ================= */
-    section("G — cancel after cutoff needs approval");
-    const g = await bookingService.cancelBooking({
-        businessId: business._id, bookingId: b.booking._id, now: AFTER,
-    });
-    check("not applied", g.applied === false);
-    check("cancellation request raised", g.request?.type === "cancellation");
-    check("delta is -15", g.request?.quantityDelta === -15, String(g.request?.quantityDelta));
-    const bMid = await Booking.findById(b.booking._id).lean();
-    check("booking STILL confirmed while pending", bMid.status === "confirmed", bMid.status);
+    section("G — a cancellation after cutoff is refused");
+    // The food may already be cooking. Dropping out after the count was struck
+    // is an operational decision, and it is made at the counter.
+    let cancelErr = null;
+    try {
+        await bookingService.cancelBooking({
+            businessId: business._id, bookingId: a.booking._id, now: AFTER,
+        });
+    } catch (err) { cancelErr = err; }
+    check("refused with CUTOFF_PASSED", cancelErr?.code === "CUTOFF_PASSED", cancelErr?.code);
+    const aStill = await Booking.findById(a.booking._id).lean();
+    check("booking is still confirmed", aStill.status === "confirmed", aStill.status);
     t = await totals();
-    check("count unchanged at 55 while pending", t.totalQuantity === 55, String(t.totalQuantity));
+    check("count unchanged at 15", t.totalQuantity === 15, String(t.totalQuantity));
 
-    await bookingService.resolveRequest({
-        businessId: business._id, requestId: g.request._id, decision: "accept",
-        actor: { userId: owner._id, name: owner.name }, now: AFTER,
-    });
-    t = await totals();
-    check("accepted -> count drops to 40", t.totalQuantity === 40, String(t.totalQuantity));
-
-    // A rejected cancellation must leave the booking confirmed and counted.
+    // ...and the operator can still cancel it, whatever the clock says.
     const g2src = await bookingService.createBooking({
         businessId: business._id, mealTypeId: lunch._id, date: D,
         quantities: qty({ [veg._id]: 6 }), party: party("Keep Co", "9800000005"), now: BEFORE,
     });
-    const g2 = await bookingService.cancelBooking({
-        businessId: business._id, bookingId: g2src.booking._id, now: AFTER,
+    const opCancel = await bookingService.cancelBooking({
+        businessId: business._id, bookingId: g2src.booking._id,
+        byOperator: true, actor: { userId: owner._id, name: owner.name }, now: AFTER,
     });
-    await bookingService.resolveRequest({
-        businessId: business._id, requestId: g2.request._id, decision: "reject",
-        actor: { userId: owner._id, name: owner.name }, now: AFTER,
-    });
-    const g2After = await Booking.findById(g2src.booking._id).lean();
-    check("rejected cancellation leaves it confirmed", g2After.status === "confirmed", g2After.status);
+    check("operator cancellation applies after cutoff", opCancel.applied === true);
+    check("and raises no request", opCancel.request === null);
     t = await totals();
-    check("count still includes it (46)", t.totalQuantity === 46, String(t.totalQuantity));
+    check("count back to 15", t.totalQuantity === 15, String(t.totalQuantity));
 
     /* ================= SCENARIO H ================= */
     section("H — a second submission is a separate booking");
@@ -392,14 +373,16 @@ async function main() {
         cutoffState(preppedBreakfast, tomorrow, { now: at("19:00") }).passed === false);
 
     /* ================= operator override ================= */
-    section("Operator bookings bypass the approval queue");
+    section("The counter is never subject to the cutoff");
     const opBooking = await bookingService.createBooking({
         businessId: business._id, mealTypeId: lunch._id, date: D,
         quantities: qty({ [veg._id]: 2 }), party: party("Counter Walk-in", "9800000009"),
         source: "operator", actor: { userId: owner._id, name: owner.name }, now: AFTER,
     });
     check("operator booking is confirmed despite being late", opBooking.booking.status === "confirmed");
-    check("no request for the operator to approve", opBooking.request === null);
+    check("nothing is queued for anybody to approve", opBooking.request === null);
+    // Still flagged, because "how many did we take after the deadline today"
+    // is the number that tells an operator their cutoff is set wrong.
     check("but still recorded as late for reporting", opBooking.booking.submittedAfterCutoff === true);
 
     /* ================= validation + tenancy ================= */
@@ -437,22 +420,15 @@ async function main() {
             businessId: business._id, mealTypeId: lunch._id, date: D,
             quantities: qty({ [veg._id]: 1 }), party: { name: "X", phone: "123" }, now: BEFORE,
         }), "BAD_PHONE");
-    await expectFail("resolving an already-resolved request is refused",
-        () => bookingService.resolveRequest({
-            businessId: business._id, requestId: c.request._id, decision: "accept",
-            actor: { userId: owner._id, name: owner.name },
-        }), "ALREADY_RESOLVED");
-    await expectFail("a second open request on one booking is refused",
-        async () => {
-            await bookingService.changeBooking({
-                businessId: business._id, bookingId: g2src.booking._id,
-                quantities: qty({ [veg._id]: 3 }), now: AFTER,
-            });
-            await bookingService.changeBooking({
-                businessId: business._id, bookingId: g2src.booking._id,
-                quantities: qty({ [veg._id]: 4 }), now: AFTER,
-            });
-        }, "REQUEST_OPEN");
+    await expectFail("a customer cannot change a booking after the cutoff",
+        () => bookingService.changeBooking({
+            businessId: business._id, bookingId: a.booking._id,
+            quantities: qty({ [veg._id]: 3 }), now: AFTER,
+        }), "CUTOFF_PASSED");
+    await expectFail("a customer cannot cancel a booking after the cutoff",
+        () => bookingService.cancelBooking({
+            businessId: business._id, bookingId: a.booking._id, now: AFTER,
+        }), "CUTOFF_PASSED");
 
     /* ================= HTTP: auth + permissions ================= */
     section("HTTP — authentication and permissions");
@@ -487,8 +463,8 @@ async function main() {
     check("viewer CANNOT create a booking (403)", r.status === 403, String(r.status));
     check("...and is told which permission is missing",
         r.data?.requiredPermission === "bookings.create", r.data?.requiredPermission);
-    r = await call("POST", `/api/requests/${g2.request._id}/accept`, { cookie: viewerCookie });
-    check("viewer CANNOT resolve requests (403)", r.status === 403, String(r.status));
+    r = await call("POST", `/api/bookings/${a.booking._id}/cancel`, { cookie: viewerCookie });
+    check("viewer CANNOT cancel a booking (403)", r.status === 403, String(r.status));
     r = await call("GET", "/api/config", { cookie: viewerCookie });
     check("viewer CANNOT read config (403)", r.status === 403, String(r.status));
     r = await call("GET", "/api/team", { cookie: viewerCookie });
@@ -551,22 +527,16 @@ async function main() {
     check("cross-business booking access refused (404)", r.status === 404, String(r.status));
 
     /* ================= HTTP: dashboard numbers ================= */
-    section("HTTP — dashboard reports confirmed and pending separately");
-    const pendingChange = await bookingService.changeBooking({
-        businessId: business._id, bookingId: h1.booking._id,
-        quantities: qty({ [veg._id]: 30, [nonVeg._id]: 30 }), now: at("17:00"),
-    });
+    section("HTTP — the dashboard count has no pending half");
     r = await call("GET", `/api/dashboard/today?date=${D}`, { cookie: ownerCookie });
     check("dashboard loads", r.status === 200, String(r.status));
     const dinnerRow = r.data.services.find((s) => s.key === "dinner");
-    check("dinner confirmed is still 23", dinnerRow.confirmed.totalQuantity === 23,
+    check("dinner confirmed is 23", dinnerRow.confirmed.totalQuantity === 23,
         String(dinnerRow.confirmed.totalQuantity));
-    check("one pending request shown", dinnerRow.pending.count === 1, String(dinnerRow.pending.count));
-    check("pending delta shown separately (+45)", dinnerRow.pending.quantityDelta === 45,
-        String(dinnerRow.pending.quantityDelta));
-    check("pending is NOT folded into confirmed", dinnerRow.confirmed.totalQuantity === 23);
+    // The number the kitchen cooks to is now the only number there is.
+    check("nothing is pending anywhere", dinnerRow.pending.count === 0, String(dinnerRow.pending.count));
     const lunchRow = r.data.services.find((s) => s.key === "lunch");
-    check("late-accepted meals surfaced", lunchRow.lateAccepted.quantity > 0,
+    check("meals taken late at the counter are still surfaced", lunchRow.lateAccepted.quantity > 0,
         JSON.stringify(lunchRow.lateAccepted));
     check("variant rows are in configured order",
         dinnerRow.confirmed.byVariant.map((v) => v.variantName).join(",").startsWith("Veg,Non-Veg"),
@@ -577,14 +547,13 @@ async function main() {
     await new Promise((res) => setTimeout(res, 700)); // writes are fire-and-forget
     const logs = await AuditLog.find({ businessId: business._id }).lean();
     const actions = new Set(logs.map((l) => l.action));
-    check("late submission recorded", [...actions].some((a) => /late booking/i.test(a)));
-    check("acceptance recorded", [...actions].some((a) => /Accepted a/i.test(a)));
-    check("rejection recorded", [...actions].some((a) => /Rejected a/i.test(a)));
+    check("booking creation recorded", [...actions].some((a) => /Created a booking/i.test(a)));
+    check("change recorded", [...actions].some((a) => /[Cc]hanged a booking/.test(a)));
     check("cancellation recorded", [...actions].some((a) => /[Cc]ancel/.test(a)));
-    const accept = logs.find((l) => /Accepted a change/i.test(l.action));
-    check("before AND after quantities kept on an accepted change",
-        accept?.before?.totalQuantity === 15 && accept?.after?.totalQuantity === 40,
-        JSON.stringify({ b: accept?.before?.totalQuantity, a: accept?.after?.totalQuantity }));
+    const changed = logs.find((l) => /Operator changed a booking/i.test(l.action));
+    check("before AND after quantities kept on a change",
+        changed?.before?.totalQuantity === 15 && changed?.after?.totalQuantity === 15,
+        JSON.stringify({ b: changed?.before?.totalQuantity, a: changed?.after?.totalQuantity }));
     check("operator attributed on their actions",
         logs.some((l) => String(l.actorUserId) === String(owner._id) && l.actorKind === "operator"));
     check("customer actions attributed to the party, not an operator",
@@ -606,16 +575,12 @@ async function main() {
     logs.forEach((l, i) => walk({ before: l.before, after: l.after, details: l.details }, `log[${i}]`));
     check("no credential ever written to the trail", leaks.length === 0, leaks.join(", "));
 
-    /* ================= resolved requests are immutable history ================= */
-    section("Request history is preserved");
-    const allReqs = await BookingRequest.find({ businessId: business._id }).lean();
-    check("resolved requests are kept, not deleted", allReqs.filter((x) => x.status !== "pending").length >= 5,
-        String(allReqs.filter((x) => x.status !== "pending").length));
-    check("each keeps what was asked and what it replaced",
-        allReqs.filter((x) => x.type === "change").every((x) => x.currentTotal >= 0 && x.requestedTotal >= 0));
-    const aReqs = allReqs.filter((x) => String(x.bookingId) === String(a.booking._id));
-    check("one booking carries several requests over its life", aReqs.length >= 2, String(aReqs.length));
-
+    /* ================= no requests exist any more ================= */
+    section("The approval queue is gone, not hidden");
+    const leftover = await BookingRequest.countDocuments({ businessId: business._id });
+    check("not one request was created anywhere in this run", leftover === 0, String(leftover));
+    const stuck = await Booking.countDocuments({ businessId: business._id, status: "pending_approval" });
+    check("and no booking is left waiting on one", stuck === 0, String(stuck));
 
     /* ================= SCENARIO K =================
        Business-defined booking questions. The whole point is that NOTHING
@@ -846,13 +811,19 @@ async function main() {
     r = await call("POST", `/api/bookings/${scannedId}/consume`, { cookie: ownerCookie, body: { via: "manual" } });
     check("and it can be served again afterwards", r.status === 200, String(r.status));
 
-    const pendingBooking = await bookingService.createBooking({
+    // Nothing can REACH pending_approval any more, but rows from before the
+    // cutoff became a wall still exist in real databases, and the counter must
+    // keep refusing to hand food over for one. Built directly, because the
+    // service will no longer produce it.
+    const seedPending = await bookingService.createBooking({
         businessId: business._id, mealTypeId: lunch._id, date: D,
         quantities: qty({ [veg._id]: 2 }), party: party("Not Yet", "9800000097"),
-        answers: { "employee-id": "EMP-P" }, now: AFTER,
+        answers: { "employee-id": "EMP-P" }, now: BEFORE,
     });
-    r = await call("POST", `/api/bookings/${pendingBooking.booking._id}/consume`, { cookie: ownerCookie, body: { via: "scan" } });
-    check("a booking still awaiting approval cannot be served",
+    await Booking.updateOne({ _id: seedPending.booking._id },
+        { $set: { status: "pending_approval", confirmedAt: null } });
+    r = await call("POST", `/api/bookings/${seedPending.booking._id}/consume`, { cookie: ownerCookie, body: { via: "scan" } });
+    check("a legacy booking still awaiting approval cannot be served",
         r.status === 409 && r.data.code === "CONSUME_PENDING", `${r.status} ${r.data.code}`);
 
     const deadBooking = await bookingService.createBooking({
@@ -874,6 +845,49 @@ async function main() {
     check("undoing a served mark is written to the trail too",
         serveAudit.some((x) => /undid|undo/i.test(x.action)),
         serveAudit.map((x) => x.action).join(" | ").slice(0, 160));
+
+    /* ================= SCENARIO P ================= */
+    section("P — a role whose entire job is the scanner");
+    r = await call("POST", "/api/auth/login", { body: { identifier: "zzcounter@test.local", password: "password123" } });
+    check("counter staff can sign in", r.status === 200, String(r.status));
+    const scanCookie = (r.setCookie || "").split(";")[0];
+
+    r = await call("GET", "/api/auth/me", { cookie: scanCookie });
+    check("they hold exactly one permission", r.data?.permissions?.length === 1,
+        JSON.stringify(r.data?.permissions));
+    check("...and it is scan.use", r.data?.permissions?.[0] === "scan.use");
+
+    // What they CAN do: everything the hatch needs.
+    const scanTarget = await bookingService.createBooking({
+        businessId: business._id, mealTypeId: snacks._id, date: D,
+        quantities: qty({ [veg._id]: 1 }), party: party("Counter Test", "9800000096"),
+        answers: { "employee-id": "E-SCAN" }, now: BEFORE,
+    });
+    r = await call("GET", `/api/bookings/by-ticket/${scanTarget.booking.ticket}`, { cookie: scanCookie });
+    check("they can open a booking from its code", r.status === 200, String(r.status));
+    r = await call("GET", `/api/bookings/by-reference/${scanTarget.booking.reference}`, { cookie: scanCookie });
+    check("they can open one from its reference too", r.status === 200, String(r.status));
+    check("the record carries what the counter needs",
+        r.data?.booking?.mealTypeName && Array.isArray(r.data?.booking?.lines),
+        JSON.stringify(Object.keys(r.data?.booking || {})).slice(0, 120));
+    r = await call("POST", `/api/bookings/${scanTarget.booking._id}/consume`,
+        { cookie: scanCookie, body: { via: "scan" } });
+    check("they can mark it served", r.status === 200, String(r.status));
+    check("and are recorded as the one who did",
+        r.data?.booking?.consumedByName === "ZZ Counter Staff", r.data?.booking?.consumedByName);
+
+    // What they CANNOT do: everything else. This is the point of the role.
+    r = await call("GET", `/api/bookings?date=${D}`, { cookie: scanCookie });
+    check("they CANNOT list everybody's bookings (403)", r.status === 403, String(r.status));
+    r = await call("GET", "/api/dashboard/today", { cookie: scanCookie });
+    check("they CANNOT open the dashboard (403)", r.status === 403, String(r.status));
+    r = await call("POST", "/api/bookings", {
+        cookie: scanCookie,
+        body: { mealTypeId: snacks._id, date: D, quantities: qty({ [veg._id]: 1 }), party: party("Y", "9800000095") },
+    });
+    check("they CANNOT create a booking (403)", r.status === 403, String(r.status));
+    r = await call("GET", "/api/config", { cookie: scanCookie });
+    check("they CANNOT read the business configuration (403)", r.status === 403, String(r.status));
 
     /* ================= SCENARIO O ================= */
     section("O — the optional customer account");

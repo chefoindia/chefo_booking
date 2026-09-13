@@ -298,14 +298,86 @@ input, select, textarea { font-family: inherit; }
 .chip.on { border-color: var(--basil); background: var(--basil-soft); color: var(--basil-dark); }
 .chip:disabled { opacity: .45; cursor: not-allowed; }
 
-.dishes { margin: 4px 0 0; padding-left: 16px; font-size: 13px; color: var(--slate); line-height: 1.55; }
+/* The day's dishes, read as one sentence. A bulleted list of six items made
+   a four-row form scroll for a page, which is why this is prose. */
+.dish-line { font-size: 12.5px; color: var(--slate); line-height: 1.45; margin-top: 2px; }
 .price-tag {
   font-size: 12px; font-weight: 600; color: var(--basil-dark);
   background: var(--basil-soft); border-radius: 999px; padding: 2px 8px;
 }
 .btn-lg { padding: 15px 18px; font-size: 16px; }
 
+/* ---------------------------------------------------------- meal picker
+ * A meal is a ROW, not a card: name on the left, when it shuts under it, a tick
+ * when chosen. Nothing else fits on a phone without pushing the next decision
+ * off the screen. Lives here rather than in the sheet because the same rows are
+ * used wherever a meal is chosen. */
+.pick-list { margin-top: 12px; border-top: 1px solid var(--border); }
+.pick {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  width: 100%; padding: 12px 2px; background: none; border: none;
+  border-bottom: 1px solid var(--border);
+  font: inherit; color: inherit; text-align: left; cursor: pointer;
+}
+.pick:disabled { opacity: .45; cursor: not-allowed; }
+.pick-main { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.pick-name { font-weight: 600; font-size: 15px; }
+.pick-when { font-size: 12px; }
+.pick-tick {
+  width: 24px; height: 24px; border-radius: 999px; flex-shrink: 0;
+  display: grid; place-items: center; font-size: 13px; font-weight: 700;
+  border: 1.5px solid var(--border-strong); color: transparent;
+}
+.pick.on .pick-tick { background: var(--basil); border-color: var(--basil); color: #fff; }
+.pick.on .pick-name { color: var(--basil-dark); }
+
+/* ------------------------------------------------------- bottom sheet
+ * Ported from the Chefo customer app. Anything that would be a dialog slides
+ * up from the bottom: the screen behind stays visible so nobody loses their
+ * place, and the controls stay under a thumb. */
+.sheet-overlay {
+  position: fixed; inset: 0; z-index: 70;
+  background: rgba(28, 37, 32, 0.45); animation: fadeIn 160ms ease;
+}
+.sheet {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 71;
+  max-width: var(--app-max-w); margin: 0 auto;
+  max-height: 90dvh; background: var(--card);
+  border-radius: 20px 20px 0 0;
+  box-shadow: 0 -16px 40px rgba(28, 37, 32, 0.16);
+  display: flex; flex-direction: column;
+  animation: slideUp 220ms cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+.sheet-grabber {
+  width: 36px; height: 4px; border-radius: 999px;
+  background: var(--border-strong); margin: 10px auto 2px; cursor: pointer;
+}
+.sheet-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 18px 12px; border-bottom: 1px solid var(--border);
+}
+.sheet-title { font-family: var(--font-display), sans-serif; font-size: 16px; font-weight: 700; }
+.sheet-sub { font-size: 12px; color: var(--faint); margin-top: 1px; }
+.sheet-x {
+  border: none; background: none; font-size: 26px; line-height: 1;
+  color: var(--faint); cursor: pointer; padding: 0 4px; flex-shrink: 0;
+}
+.sheet-body {
+  flex: 1; overflow-y: auto; padding: 14px 16px;
+  /* Momentum scrolling, and a flick that reaches the end must not carry on
+     into the screen behind the sheet, which is the web default. */
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+.sheet-foot {
+  display: flex; gap: 10px; flex-direction: column;
+  padding: 12px 16px calc(12px + var(--safe-b));
+  border-top: 1px solid var(--border); background: var(--card);
+}
+@keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
 @media (prefers-reduced-motion: reduce) {
-  .sk::after { animation: none; }
+  .sk::after, .sheet, .sheet-overlay { animation: none; }
   * { transition-duration: 0s !important; }
 }

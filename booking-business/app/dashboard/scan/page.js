@@ -154,9 +154,16 @@ export default function ScanPage() {
 
     /* -------------------------------------------------- lookup */
     const openById = useCallback(async (id) => {
-        const res = await get(`/api/bookings/${id}`);
-        setData(res);
-        setPhase("found");
+        try {
+            const res = await get(`/api/bookings/${id}`);
+            setData(res);
+            setPhase("found");
+        } catch (e) {
+            if (e.status === 404) { setPhase("missing"); return; }
+            setPhase("idle");
+            toast("error", e.status === 403 ? "Not allowed" : "Couldn\u2019t open that booking", e.message);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const lookup = useCallback(async (raw) => {
@@ -176,8 +183,20 @@ export default function ScanPage() {
                 return;
             }
 
-            // A BK- reference has no endpoint of its own — the list search
-            // already matches references, so it falls back to that.
+            // A BK- reference has its own endpoint: exact match, one record,
+            // and openable by a role whose only permission is the scanner.
+            try {
+                setData(await get(`/api/bookings/by-reference/${encodeURIComponent(parsed.value)}`));
+                setPhase("found");
+                return;
+            } catch (e) {
+                // Not an exact reference. Fall through to the broader search,
+                // which also matches names and numbers — but only for somebody
+                // allowed to list bookings at all.
+                if (e.status !== 404) throw e;
+            }
+
+            if (!access.can("bookings.view")) { setPhase("missing"); return; }
             const res = await get(`/api/bookings?q=${encodeURIComponent(parsed.value)}&limit=10`);
             const hits = res.bookings || [];
             // "BK-12" regex-matches BK-123 too. An exact reference wins outright;
@@ -194,7 +213,7 @@ export default function ScanPage() {
             setPhase("idle");
             toast("error", e.status === 403 ? "Not allowed" : "Couldn't look that up", e.message);
         }
-    }, [openById, toast]);
+    }, [openById, toast, access]);
 
     const onDecode = useCallback((text) => {
         // The success callback fires on every frame the code stays in view.
@@ -279,6 +298,12 @@ export default function ScanPage() {
         startCamera();
     }, [startCamera]);
 
+    // The camera stops the moment a record takes the screen. Hiding it while it
+    // still runs would leave the light on behind a panel nobody can see.
+    useEffect(() => {
+        if (phase === "found" || phase === "many") stopCamera();
+    }, [phase, stopCamera]);
+
     const submitTyped = (e) => {
         e?.preventDefault();
         if (!typed.trim()) return;
@@ -288,7 +313,10 @@ export default function ScanPage() {
 
     /* -------------------------------------------------- consume */
     const b = data?.booking;
-    const canConsume = access.can("bookings.consume");
+    // A scan-only role's whole job is to hand food over, so scan.use carries
+    // the serve action with it. bookings.consume still works for the roles that
+    // were built around the Bookings module.
+    const canConsume = access.can("bookings.consume") || access.can("scan.use");
 
     const runConsume = async () => {
         setBusy(true);
@@ -345,15 +373,31 @@ export default function ScanPage() {
         action: runUnconsume,
     });
 
+    // A found booking, or a list to choose from, owns the screen.
+    const showScanner = phase !== "found" && phase !== "many";
+
     return (
         <div>
-            <div className="page-head">
+            <div className="page-head row-between wrap">
                 <div>
-                    <h1 className="page-title">Scan a booking</h1>
-                    <p className="page-sub">Point the camera at the customer’s code, or type their reference.</p>
+                    <h1 className="page-title">{showScanner ? "Scan a booking" : "Booking found"}</h1>
+                    <p className="page-sub">
+                        {showScanner
+                            ? "Point the camera at the customer\u2019s code, or type their reference."
+                            : "Everything the counter needs for this one. Scan the next when you\u2019re done."}
+                    </p>
                 </div>
+                {/* The way back to the scanner, once the scanner is hidden. */}
+                {!showScanner && (
+                    <button className="btn btn-secondary" onClick={scanNext}>Scan another</button>
+                )}
             </div>
 
+            {/* A result is what the counter is looking at, and a live camera
+                above it is a second thing competing for the same eyes. Once a
+                booking is on screen the scanner folds away until it is wanted
+                again \u2014 and the camera is genuinely stopped, not just hidden. */}
+            {showScanner && (
             <div className="scan-cols">
                 {/* ---------------------------------------------- camera */}
                 <div className="card card-pad">
@@ -417,14 +461,15 @@ export default function ScanPage() {
                         </button>
                     </form>
                     <p className="xsmall faint" style={{ marginTop: 12, marginBottom: 0, lineHeight: 1.6 }}>
-                        This box works whatever the camera is doing — a cracked lens or a flat
-                        battery shouldn’t stop the queue.
+                        This box works whatever the camera is doing \u2014 a cracked lens or a flat
+                        battery shouldn\u2019t stop the queue.
                     </p>
                 </div>
             </div>
+            )}
 
             {/* ---------------------------------------------- result */}
-            <div style={{ marginTop: 14 }}>
+            <div style={{ marginTop: showScanner ? 14 : 0 }}>
                 {phase === "looking" && (
                     <div className="card card-pad"><div className="sk" style={{ height: 170 }} /></div>
                 )}
@@ -525,6 +570,25 @@ export default function ScanPage() {
               }
               .serve-panel.yes .serve-head { color: var(--basil-dark); }
 
+              /* The meal is the headline of a scanned record. */
+              .scan-meal {
+                font-family: var(--font-display), sans-serif; font-size: 26px;
+                font-weight: 700; letter-spacing: -.02em; margin: 0 0 2px;
+              }
+              .scan-order { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+              .scan-line {
+                display: inline-flex; align-items: baseline; gap: 7px;
+                padding: 7px 13px; border-radius: 999px;
+                background: var(--basil-soft); color: var(--basil-dark);
+                border: 1px solid var(--basil);
+              }
+              .scan-line .n {
+                font-family: var(--font-display), sans-serif; font-weight: 700; font-size: 19px;
+                font-variant-numeric: tabular-nums;
+              }
+              .scan-line .l { font-size: 14px; font-weight: 600; }
+              .scan-total { font-size: 13px; color: var(--slate); }
+
               .ans-grid { display: grid; gap: 10px; }
               @media (min-width: 620px) { .ans-grid { grid-template-columns: repeat(2, 1fr); } }
               .ans { padding: 9px 11px; background: var(--paper); border-radius: var(--radius-sm); }
@@ -563,13 +627,17 @@ function Result({ data, canConsume, onServe, onUndo, onNext }) {
     return (
         <div className="card card-pad">
             <div className="stack">
+                {/* WHAT TO HAND OVER, first and biggest. The reference is how
+                    the record is addressed, but it is not what anybody at the
+                    counter is looking for — they want the meal, and how
+                    many of which option. Those used to be small grey text and a
+                    breakdown three sections further down. */}
                 <div className="row-between wrap" style={{ gap: 10 }}>
-                    <div>
-                        <div className="mono" style={{ fontSize: 20, fontWeight: 700, letterSpacing: "-.01em" }}>
-                            {b.reference}
-                        </div>
+                    <div style={{ minWidth: 0 }}>
+                        <h2 className="scan-meal">{b.mealTypeName}</h2>
                         <div className="small muted">
-                            {b.mealTypeName} · {formatDate(b.date, { year: true })}
+                            {formatDate(b.date, { year: true })}
+                            <span className="mono" style={{ marginLeft: 10 }}>{b.reference}</span>
                         </div>
                     </div>
                     <div className="row wrap" style={{ gap: 6 }}>
@@ -583,6 +651,22 @@ function Result({ data, canConsume, onServe, onUndo, onNext }) {
                         {b.submittedAfterCutoff && <span className="badge badge-amber">Booked after cutoff</span>}
                         {b.source === "operator" && <span className="badge badge-blue">Entered at counter</span>}
                     </div>
+                </div>
+
+                {/* The order itself, in the words the kitchen uses for it. Only
+                    the options actually ordered — a row of zeroes is noise
+                    at a counter, whatever it is worth on a kitchen sheet. */}
+                <div className="scan-order">
+                    {b.lines.filter((l) => l.quantity > 0).map((l) => (
+                        <span key={l.variantId} className="scan-line">
+                            <span className="n">{l.quantity}</span>
+                            <span className="l">{l.variantName}</span>
+                        </span>
+                    ))}
+                    <span className="scan-total">
+                        {b.totalQuantity} meal{b.totalQuantity === 1 ? "" : "s"} in total
+                        {b.totalAmount > 0 ? ` · ₹${b.totalAmount.toLocaleString("en-IN")}` : ""}
+                    </span>
                 </div>
 
                 {/* The single most important fact, above everything else. */}
@@ -633,23 +717,9 @@ function Result({ data, canConsume, onServe, onUndo, onNext }) {
                         )}
                     </div>
                     <div>
-                        <div className="num-label">Total meals</div>
-                        <div className="mid-num">{b.totalQuantity}</div>
-                        {b.totalAmount > 0 && (
-                            <div className="small muted">₹{b.totalAmount.toLocaleString("en-IN")}</div>
-                        )}
-                    </div>
-                </div>
-
-                <div>
-                    <div className="num-label">Breakdown</div>
-                    <div className="variant-grid">
-                        {b.lines.map((l) => (
-                            <div key={l.variantId} className={`variant-chip ${l.quantity ? "" : "zero"}`}>
-                                <div className="n">{l.quantity}</div>
-                                <div className="l">{l.variantName}</div>
-                            </div>
-                        ))}
+                        <div className="num-label">Booked</div>
+                        <div className="small">{fmtDateTime(b.createdAt)}</div>
+                        <div className="xsmall faint">{timeAgo(b.createdAt)}</div>
                     </div>
                 </div>
 
@@ -688,7 +758,7 @@ function Result({ data, canConsume, onServe, onUndo, onNext }) {
                 )}
 
                 <div className="row-between wrap xsmall faint" style={{ gap: 10, paddingTop: 4, borderTop: "1px solid var(--border)" }}>
-                    <span>Booked {timeAgo(b.createdAt)} · {fmtDateTime(b.createdAt)}</span>
+                    <span>{b.source === "operator" ? "Taken at the counter" : "Booked by the customer"}</span>
                     <span>
                         {!cutoff?.hasCutoff
                             ? "No cutoff on this service"

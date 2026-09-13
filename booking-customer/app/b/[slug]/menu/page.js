@@ -11,7 +11,6 @@
 // it is the thing that decides whether looking turns into booking — how long is
 // left to book it.
 import { useCallback, useEffect, useState } from "react";
-import Link from "next/link";
 import { useParams } from "next/navigation";
 import { get } from "@/lib/api";
 import { formatDate, formatTime, shiftDate, cutoffInfo, dayWord, dayNote } from "@/lib/format";
@@ -23,7 +22,7 @@ const inr = (n) => `₹${Number(n || 0).toLocaleString("en-IN")}`;
 
 export default function MenuTab() {
     const { slug } = useParams();
-    const { today, maxDate } = useBooking();
+    const { today, maxDate, openBooking } = useBooking();
     const now = useNow(30000);
 
     const [date, setDate] = useState(today);
@@ -131,23 +130,30 @@ export default function MenuTab() {
                                                 ? <span className="price-tag">{inr(v.price)}</span>
                                                 : <span className="xsmall faint">Pay at the counter</span>}
                                         </div>
-                                        {v.description && <div className="xsmall faint">{v.description}</div>}
-                                        {v.dishes?.length > 0 ? (
-                                            <ul className="dishes">{v.dishes.map((d, i) => <li key={i}>{d}</li>)}</ul>
-                                        ) : (
-                                            <div className="xsmall faint" style={{ marginTop: 3 }}>
-                                                The kitchen hasn&apos;t listed today&apos;s dishes for this option.
-                                            </div>
+                                        {/* One line of prose, not a bulleted
+                                            list: six dishes stacked vertically
+                                            turn a day's menu into a scroll. */}
+                                        {(v.dishes?.length > 0 || v.description) && (
+                                            <p className="dish-line">
+                                                {v.dishes?.length > 0 ? v.dishes.join(", ") : v.description}
+                                            </p>
                                         )}
                                     </div>
                                 ))}
                             </div>
 
-                            <Link href={`/b/${slug}/book?date=${date}&meal=${m.id}`}
-                                className={`btn ${info.state === "closed" ? "" : "btn-primary"}`}
-                                style={{ marginTop: 12 }}>
-                                {info.state === "closed" ? `Ask for ${m.name} anyway` : `Book ${m.name}`}
-                            </Link>
+                            {/* A closed meal offers nothing to press. The line
+                                above already says when it shut and what to do. */}
+                            {info.state === "closed" ? (
+                                <p className="hint" style={{ marginTop: 12 }}>
+                                    Booking is closed for this meal. Try another day.
+                                </p>
+                            ) : (
+                                <button className="btn btn-primary" style={{ marginTop: 12 }}
+                                    onClick={() => openBooking({ date, meal: m.id })}>
+                                    Book {m.name}
+                                </button>
+                            )}
                         </div>
                     );
                 })
@@ -171,7 +177,7 @@ export default function MenuTab() {
                 font-family: var(--font-display), sans-serif; font-weight: 700; font-size: 16px;
                 font-variant-numeric: tabular-nums;
               }
-              .menu-opt { padding: 9px 0; border-bottom: 1px solid var(--border); }
+              .menu-opt { padding: 8px 0; border-bottom: 1px solid var(--border); }
               .menu-opt:last-child { border-bottom: none; padding-bottom: 0; }
             `}</style>
         </>

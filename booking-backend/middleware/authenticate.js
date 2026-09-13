@@ -138,6 +138,28 @@ function requirePermission(permission) {
     };
 }
 
+/**
+ * The same gate, satisfied by ANY ONE of several permissions.
+ *
+ * Exists for the counter: looking a booking up by its code is authorised either
+ * by `bookings.view` (you can see bookings anyway) or by `scan.use` (your whole
+ * job is the scanner). Requiring both would mean a scan-only role had to be
+ * given the entire booking list to do the one thing it is for.
+ */
+function requireAnyPermission(...permissions) {
+    return (req, res, next) => {
+        const actor = actorOf(req);
+        if (!permissions.some((p) => can(actor, p))) {
+            return res.status(403).json({
+                message: "You don't have permission to do that.",
+                code: "FORBIDDEN",
+                requiredPermission: permissions[0],
+            });
+        }
+        next();
+    };
+}
+
 /** For things that must not be delegable at all, like transferring ownership. */
 function requireOwner() {
     return (req, res, next) => {
@@ -154,6 +176,7 @@ function requireOwner() {
 module.exports = {
     authenticate,
     requirePermission,
+    requireAnyPermission,
     requireOwner,
     actorOf,
     signSession,

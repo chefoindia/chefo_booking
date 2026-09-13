@@ -636,17 +636,20 @@ function isDateBookable(business, date, now = new Date()) {
 const noTicket = (res) =>
     res.status(404).json({ message: "We couldn't find that booking.", code: "NO_TICKET" });
 
-/** Server-side answer to "what can this customer still do with this booking?" */
+/**
+ * Server-side answer to "what can this customer still do with this booking?"
+ *
+ * Past the cutoff the answer is always no. There is no late-request path any
+ * more: the deadline is where the customer's control ends, and anything after
+ * it is arranged with the canteen, who act from their own dashboard. The app
+ * must agree with that, or it offers a button whose API call is refused.
+ */
 function canCustomerAct(booking, business, cutoff, action) {
     if (["cancelled", "rejected"].includes(booking.status)) return false;
+    if (cutoff.passed) return false;
     const r = business.rules || {};
-    if (action === "edit") {
-        return cutoff.passed
-            ? r.allowCustomerChangeRequestAfterCutoff !== false
-            : r.allowCustomerEditBeforeCutoff !== false;
-    }
-    return cutoff.passed
-        ? r.allowCustomerCancelRequestAfterCutoff !== false
+    return action === "edit"
+        ? r.allowCustomerEditBeforeCutoff !== false
         : r.allowCustomerCancelBeforeCutoff !== false;
 }
 

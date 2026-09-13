@@ -18,7 +18,9 @@ import { createContext, useCallback, useContext, useEffect, useState } from "rea
 import { useParams } from "next/navigation";
 import { get } from "@/lib/api";
 import { todayKey } from "@/lib/format";
+import { loadMine } from "@/lib/mybookings";
 import BottomTabBar from "@/components/BottomTabBar";
+import BookSheet from "@/components/BookSheet";
 
 const Ctx = createContext(null);
 
@@ -41,6 +43,22 @@ export default function BookingShell({ children }) {
     // yet" — the Profile tab must not flash a sign-up card at someone who is
     // already signed in.
     const [account, setAccount] = useState({ checked: false, signedIn: false, party: null });
+
+    // WHAT THIS PHONE HAS BOOKED, fetched ONCE for the whole app. Home shows
+    // the next few with their passes, Bookings shows all of them on a calendar,
+    // and when each tab fetched for itself the same two calls went out twice
+    // and every tab switch paused. The tab that acts on a booking refreshes
+    // this; the others just read it.
+    const [mine, setMine] = useState({ loaded: false, source: "", party: null, bookings: [] });
+
+    // THE BOOKING FORM LIVES HERE, not on a page. It is a bottom sheet over
+    // whichever tab you were on, so tapping a meal on Home, a day on the
+    // calendar or a service on the menu all open the same thing without
+    // navigating away from what you were reading.
+    const [booking, setBooking] = useState(null);   // null = closed
+    const openBooking = useCallback((opts = {}) => {
+        setBooking({ date: opts.date || "", meal: opts.meal || "" });
+    }, []);
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -70,8 +88,30 @@ export default function BookingShell({ children }) {
         }
     }, [slug]);
 
+    const refreshMine = useCallback(async () => {
+        try {
+            const r = await loadMine(slug);
+            const next = r
+                ? { loaded: true, source: r.source, party: r.party, bookings: r.bookings || [] }
+                : { loaded: true, source: "", party: null, bookings: [] };
+            setMine(next);
+            return next;
+        } catch {
+            // Nothing found is not an error — it is the ordinary state of a
+            // customer who has never booked here.
+            setMine({ loaded: true, source: "", party: null, bookings: [] });
+            return null;
+        }
+    }, [slug]);
+
     useEffect(() => { load(); }, [load]);
     useEffect(() => { refreshAccount(); }, [refreshAccount]);
+    // After the account answer, so a signed-in customer's bookings come from
+    // their account rather than from whatever this browser happens to remember.
+    useEffect(() => {
+        if (!account.checked) return;
+        refreshMine();
+    }, [account.checked, refreshMine]);
 
     const value = {
         slug,
@@ -82,6 +122,8 @@ export default function BookingShell({ children }) {
         mealTypesToday: data?.mealTypes || [],
         loading, error, reload: load,
         account, setAccount, refreshAccount,
+        mine, setMine, refreshMine,
+        openBooking, bookingOpen: Boolean(booking),
     };
 
     return (
@@ -97,6 +139,23 @@ export default function BookingShell({ children }) {
                     ) : children}
                 </div>
                 <BottomTabBar slug={slug} />
+
+                <BookSheet
+                    open={Boolean(booking)}
+                    slug={slug}
+                    biz={value.biz}
+                    rules={value.rules}
+                    today={value.today}
+                    maxDate={value.maxDate}
+                    account={account}
+                    initialDate={booking?.date}
+                    initialMeal={booking?.meal}
+                    onClose={() => setBooking(null)}
+                    // The lists behind the sheet are stale the instant a booking
+                    // succeeds. Refreshing here is what stops a customer having
+                    // to reload the app to see what they just booked.
+                    onBooked={() => { refreshMine(); load(); }}
+                />
             </div>
         </Ctx.Provider>
     );

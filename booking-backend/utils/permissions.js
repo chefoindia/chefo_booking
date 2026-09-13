@@ -7,7 +7,9 @@
 //
 // A permission is `module.action`. Actions are only listed where they genuinely
 // exist — offering a checkbox that controls nothing is worse than not offering
-// it at all.
+// it at all. That is why there is no longer a `requests` module: the cutoff is
+// a wall for customers now, nothing new ever enters an approval queue, and a
+// role could only have been granted power over an empty screen.
 
 const perm = (mod, action) => `${mod}.${action}`;
 
@@ -29,8 +31,14 @@ const MODULES = [
         hint: "Viewing bookings, creating or amending them on a customer's behalf, and marking them served at the counter.",
     },
     {
-        key: "requests", label: "Approval queue", actions: ["view", "resolve"],
-        hint: "Accepting or rejecting late bookings, changes and cancellations.",
+        // A real role in a canteen is one person at the hatch with a phone,
+        // scanning codes and handing food over. They should not need the whole
+        // Bookings module to do it: `bookings.view` would hand them every
+        // customer's booking for every day, which is far more than the job.
+        // So this ONE permission opens the scanner, looks a booking up by its
+        // code, and marks it served.
+        key: "scan", label: "Scan & serve", actions: ["use"],
+        hint: "Opening the scanner, finding a booking by its code or reference, and marking it served at the counter. Nothing else.",
     },
     {
         key: "parties", label: "Booking parties", actions: ["view", "edit"],

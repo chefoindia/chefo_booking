@@ -164,13 +164,6 @@ export default function TicketPage() {
                     </div>
                 ) : null}
 
-                {b.openRequest && (
-                    <div className="notice notice-warn" style={{ marginTop: 12 }}>
-                        Your {REQUEST_LABEL[b.openRequest.type]?.toLowerCase() || "request"} is with
-                        {" "}{biz.name}. They&apos;ll accept or decline it.
-                    </div>
-                )}
-
                 {/* A cancelled booking gets no code — there is nothing to present,
                     and a scannable image would say otherwise. A collected one keeps
                     its code, because it is still the proof of which booking this is. */}
@@ -183,6 +176,8 @@ export default function TicketPage() {
                         <BookingQr
                             ticket={b.ticket || ticket}
                             reference={b.reference}
+                            booking={b}
+                            businessName={biz?.name || ""}
                             hint={served ? "Already collected" : "Show this at the counter"}
                         />
                     </div>

@@ -26,7 +26,7 @@ const BookingParty = require("../models/BookingParty");
 const Booking = require("../models/Booking");
 const BookingRequest = require("../models/BookingRequest");
 
-const { cutoffState, isDateKey, todayKey, shiftDateKey } = require("../utils/time");
+const { cutoffState, isDateKey, todayKey, shiftDateKey, formatTimeOfDay } = require("../utils/time");
 const { normalisePhone } = require("../utils/phone");
 const { newTicket } = require("../utils/ticket");
 const { record } = require("./audit");
@@ -390,6 +390,18 @@ async function createBooking({
             fail("That meal service isn't open for booking.", { status: 409, code: "MEAL_CLOSED" });
         }
         assertDateBookable({ business, date, now });
+        // THE WALL. A customer past the deadline is simply late; there is no
+        // request to raise and nothing for them to wait on. If the kitchen can
+        // still fit them in, the counter enters it — where the cutoff has never
+        // applied, because the person entering it IS the decision.
+        if (cutoff.passed) {
+            const shutAt = formatTimeOfDay(mealType.cutoffTime) || mealType.cutoffTime || "the cutoff";
+            fail(
+                `Booking for ${mealType.name} closed at ${shutAt}`
+                + `${mealType.cutoffPreviousDay ? " the day before" : ""}. Ask the counter directly.`,
+                { status: 409, code: "CUTOFF_PASSED" },
+            );
+        }
     } else if (!mealType.active) {
         fail("That meal service is inactive.", { status: 409, code: "MEAL_CLOSED" });
     }
@@ -405,8 +417,8 @@ async function createBooking({
         enforceRequired: source === "customer",
     });
 
-    // THE DECISION.
-    const late = cutoff.passed && source === "customer";
+    // Nothing reaches here late any more: a customer past the cutoff was
+    // refused above, and an operator was never subject to it.
     const reference = await nextReference(businessId, "BK");
 
     const booking = await Booking.create({
@@ -421,12 +433,12 @@ async function createBooking({
         lines,
         totalQuantity,
         totalAmount,
-        status: late ? "pending_approval" : "confirmed",
+        status: "confirmed",
         // Recorded as it was AT SUBMISSION, never recomputed — moving the
         // cutoff tomorrow must not change why this booking needed approval.
         submittedAfterCutoff: cutoff.passed,
         cutoffAtSubmission: cutoff.cutoffAt,
-        confirmedAt: late ? null : new Date(),
+        confirmedAt: new Date(),
         source,
         createdByUserId: actor?.userId || null,
         customerNote: String(customerNote || "").slice(0, 500),
@@ -437,28 +449,7 @@ async function createBooking({
         ticket: newTicket(),
     });
 
-    let request = null;
-    if (late) {
-        request = await BookingRequest.create({
-            businessId,
-            reference: await nextReference(businessId, "RQ"),
-            type: "new_booking",
-            status: "pending",
-            bookingId: booking._id,
-            partyId: partyDoc._id,
-            partySnapshot: partySnapshotOf(partyDoc),
-            mealTypeId: mealType._id,
-            mealTypeName: mealType.name,
-            date,
-            currentLines: [],
-            requestedLines: lines,
-            currentTotal: 0,
-            requestedTotal: totalQuantity,
-            quantityDelta: totalQuantity,
-            customerNote: String(customerNote || "").slice(0, 500),
-            cutoffAt: cutoff.cutoffAt,
-        });
-    }
+    const request = null;
 
     await BookingParty.updateOne(
         { _id: partyDoc._id },
@@ -467,7 +458,7 @@ async function createBooking({
 
     await record({
         businessId, actor, party: partyDoc, requestMeta,
-        action: late ? "Submitted a late booking (pending approval)" : "Created a booking",
+        action: "Created a booking",
         bookingId: booking._id,
         requestId: request?._id || null,
         after: { lines, totalQuantity, status: booking.status },
@@ -489,10 +480,9 @@ async function createBooking({
  * Amend an existing booking's quantities.
  *
  * Before cutoff -> applied directly; the confirmed count moves now.
- * After  cutoff -> a change REQUEST. The original booking is left completely
- *                  untouched, still confirmed, still counted, until an operator
- *                  decides. This is the guarantee that the kitchen's number
- *                  never moves behind its back.
+ * After  cutoff -> refused for the customer. The kitchen has committed to a
+ *                  number and the person who is late does not get to move it;
+ *                  the counter can, because the counter is the decision.
  */
 async function changeBooking({
     businessId, bookingId, quantities, customerNote = "",
@@ -518,8 +508,13 @@ async function changeBooking({
         if (!cutoff.passed && business.rules?.allowCustomerEditBeforeCutoff === false) {
             fail("This canteen doesn't allow changes online. Please call them.", { status: 403, code: "EDIT_OFF" });
         }
-        if (cutoff.passed && !stillPending && business.rules?.allowCustomerChangeRequestAfterCutoff === false) {
-            fail("Changes are closed for this meal.", { status: 403, code: "CHANGE_CLOSED" });
+        // Past the deadline the booking is final for the customer. Reducing or
+        // raising a number after the kitchen has committed to it is an
+        // operational decision, and it is made at the counter, not by the
+        // person who is late.
+        if (cutoff.passed && !stillPending) {
+            fail("Booking has closed for this meal, so it can't be changed now. Speak to the canteen.",
+                { status: 409, code: "CUTOFF_PASSED" });
         }
         if (await hasOpenRequest(booking._id)) {
             fail("You already have a request waiting on this booking.", { status: 409, code: "REQUEST_OPEN" });
@@ -532,8 +527,9 @@ async function changeBooking({
 
     const before = { lines: booking.lines.map((l) => l.toObject?.() ?? l), totalQuantity: booking.totalQuantity };
 
-    // ---- direct edit ----
-    if (!cutoff.passed || byOperator || stillPending) {
+    // Every path that reaches here is a direct edit now: a customer past the
+    // cutoff was refused above, and an operator is never subject to it.
+    {
         booking.lines = lines;
         booking.totalQuantity = totalQuantity;
         booking.totalAmount = totalAmount;
@@ -549,37 +545,6 @@ async function changeBooking({
         });
         return { booking, request: null, applied: true, cutoff };
     }
-
-    // ---- after cutoff: request only, booking untouched ----
-    const request = await BookingRequest.create({
-        businessId,
-        reference: await nextReference(businessId, "RQ"),
-        type: "change",
-        status: "pending",
-        bookingId: booking._id,
-        partyId: booking.partyId,
-        partySnapshot: booking.partySnapshot,
-        mealTypeId: booking.mealTypeId,
-        mealTypeName: mealType.name,
-        date: booking.date,
-        currentLines: before.lines,
-        requestedLines: lines,
-        currentTotal: before.totalQuantity,
-        requestedTotal: totalQuantity,
-        quantityDelta: totalQuantity - before.totalQuantity,
-        customerNote: String(customerNote || "").slice(0, 500),
-        cutoffAt: cutoff.cutoffAt,
-    });
-
-    await record({
-        businessId, actor, requestMeta,
-        action: "Requested a change after cutoff",
-        bookingId: booking._id, requestId: request._id,
-        before, after: { lines, totalQuantity },
-        details: { reference: booking.reference, requestRef: request.reference },
-    });
-
-    return { booking, request, applied: false, cutoff };
 }
 
 /* ------------------------------------------------------------------ */
@@ -589,10 +554,10 @@ async function changeBooking({
  * Cancel a booking.
  *
  * Before cutoff -> cancelled now, count drops immediately.
- * After  cutoff -> a cancellation REQUEST. The booking stays confirmed and
- *                  keeps counting, because the food may already be cooking.
- *                  Reducing a number after cutoff is just as much an
- *                  operational decision as increasing one.
+ * After  cutoff -> refused for the customer, because the food may already be
+ *                  cooking. Reducing a number after cutoff is just as much an
+ *                  operational decision as increasing one, and it is made at
+ *                  the counter.
  */
 async function cancelBooking({
     businessId, bookingId, reason = "",
@@ -613,8 +578,12 @@ async function cancelBooking({
         if (!cutoff.passed && business.rules?.allowCustomerCancelBeforeCutoff === false) {
             fail("This canteen doesn't allow cancelling online. Please call them.", { status: 403, code: "CANCEL_OFF" });
         }
-        if (cutoff.passed && !stillPending && business.rules?.allowCustomerCancelRequestAfterCutoff === false) {
-            fail("Cancellations are closed for this meal.", { status: 403, code: "CANCEL_CLOSED" });
+        // Same wall. The meal may already be cooking, and a customer dropping
+        // out after the count was struck is something the canteen decides about
+        // at the counter, not something the app does silently.
+        if (cutoff.passed && !stillPending) {
+            fail("Booking has closed for this meal, so it can't be cancelled now. Speak to the canteen.",
+                { status: 409, code: "CUTOFF_PASSED" });
         }
         if (await hasOpenRequest(booking._id)) {
             fail("You already have a request waiting on this booking.", { status: 409, code: "REQUEST_OPEN" });
@@ -623,9 +592,9 @@ async function cancelBooking({
 
     const before = { totalQuantity: booking.totalQuantity, status: booking.status };
 
-    // Withdrawing a booking that has not been approved yet is not a
-    // cancellation the kitchen needs to weigh in on — nothing was ever counted.
-    if (!cutoff.passed || byOperator || stillPending) {
+    // Every path that reaches here cancels directly, for the same reason as
+    // changeBooking: a late customer was already refused.
+    {
         booking.status = "cancelled";
         booking.cancelledAt = new Date();
         await booking.save();
@@ -650,35 +619,6 @@ async function cancelBooking({
         });
         return { booking, request: null, applied: true, cutoff };
     }
-
-    const request = await BookingRequest.create({
-        businessId,
-        reference: await nextReference(businessId, "RQ"),
-        type: "cancellation",
-        status: "pending",
-        bookingId: booking._id,
-        partyId: booking.partyId,
-        partySnapshot: booking.partySnapshot,
-        mealTypeId: booking.mealTypeId,
-        mealTypeName: mealType.name,
-        date: booking.date,
-        currentLines: booking.lines.map((l) => l.toObject?.() ?? l),
-        requestedLines: [],
-        currentTotal: booking.totalQuantity,
-        requestedTotal: 0,
-        quantityDelta: -booking.totalQuantity,
-        customerNote: String(reason || "").slice(0, 500),
-        cutoffAt: cutoff.cutoffAt,
-    });
-
-    await record({
-        businessId, actor, requestMeta,
-        action: "Requested a cancellation after cutoff",
-        bookingId: booking._id, requestId: request._id,
-        before, details: { reference: booking.reference, requestRef: request.reference, reason },
-    });
-
-    return { booking, request, applied: false, cutoff };
 }
 
 const hasOpenRequest = async (bookingId) =>

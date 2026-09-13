@@ -35,7 +35,8 @@ export async function fromLedger(slug) {
     const tickets = entries.map((e) => e.ticket).filter(Boolean).slice(0, 100);
     if (!tickets.length) return null;
 
-    const res = await post(`/api/public/business/${slug}/tickets`, { tickets });
+    // A POST that reads: it carries a list of tickets, nothing more.
+    const res = await post(`/api/public/business/${slug}/tickets`, { tickets }, { readOnly: true });
     const list = res?.bookings || [];
     adopt(slug, list);
 
@@ -54,7 +55,7 @@ export async function fromLedger(slug) {
 export async function fromPhone(slug, raw) {
     const p = String(raw || "").trim();
     if (!p) return null;
-    const res = await post(`/api/public/business/${slug}/lookup`, { phone: p });
+    const res = await post(`/api/public/business/${slug}/lookup`, { phone: p }, { readOnly: true });
     adopt(slug, res?.bookings);
     writeMe({ phone: p.replace(/\D/g, "").slice(-10) });
     return { source: "phone", party: res?.party || null, bookings: res?.bookings || [] };

@@ -18,7 +18,7 @@ const BookingParty = require("../models/BookingParty");
 const bookingService = require("../services/bookingService");
 const { confirmedTotals, orderVariants } = require("../services/quantity");
 const { consumeBooking, unconsumeBooking } = require("../services/consumption");
-const { authenticate, requirePermission } = require("../middleware/authenticate");
+const { authenticate, requirePermission, requireAnyPermission } = require("../middleware/authenticate");
 const { cutoffState, isDateKey } = require("../utils/time");
 const { normalisePhone } = require("../utils/phone");
 const { notify } = require("../services/notify");
@@ -146,7 +146,9 @@ async function detailPayload(businessId, booking) {
 // this second is one careless path edit away from ":id" swallowing "by-ticket"
 // and answering every scan with "Invalid booking."
 router.get("/api/bookings/by-ticket/:ticket",
-    authenticate, requirePermission("bookings.view"),
+    // A scan-only role reaches exactly one booking here — the one whose code is
+    // in their hand — without being able to list anybody else's.
+    authenticate, requireAnyPermission("bookings.view", "scan.use"),
     async (req, res, next) => {
         try {
             const ticket = String(req.params.ticket || "");
@@ -163,8 +165,29 @@ router.get("/api/bookings/by-ticket/:ticket",
         } catch (err) { next(err); }
     });
 
+// Same reasoning as by-ticket, for the counter's other input: somebody reads a
+// BK- reference off a customer's screen. Exact match only, and one record —
+// it is the reference equivalent of holding the code up, not a search.
+router.get("/api/bookings/by-reference/:reference",
+    authenticate, requireAnyPermission("bookings.view", "scan.use"),
+    async (req, res, next) => {
+        try {
+            const reference = String(req.params.reference || "").trim().toUpperCase();
+            if (!reference) return res.status(400).json({ message: "Invalid reference." });
+
+            const booking = await Booking.findOne({ reference, businessId: req.businessId }).lean();
+            if (!booking) {
+                return res.status(404).json({ message: "No booking here has that reference.", code: "NO_BOOKING" });
+            }
+            res.json(await detailPayload(req.businessId, booking));
+        } catch (err) { next(err); }
+    });
+
 router.get("/api/bookings/:id",
-    authenticate, requirePermission("bookings.view"),
+    // A scan-only role needs this to re-read the record it just served. An id
+    // is not guessable and answers for exactly one booking, so it grants no
+    // ability to browse anybody else's.
+    authenticate, requireAnyPermission("bookings.view", "scan.use"),
     async (req, res, next) => {
         try {
             if (!isId(req.params.id)) return res.status(400).json({ message: "Invalid booking." });
@@ -258,7 +281,7 @@ router.post("/api/bookings/:id/cancel",
 // scanner and the manual button can never diverge. These two handlers only
 // carry the request in and the booking back out.
 router.post("/api/bookings/:id/consume",
-    authenticate, requirePermission("bookings.consume"),
+    authenticate, requireAnyPermission("bookings.consume", "scan.use"),
     async (req, res, next) => {
         try {
             if (!isId(req.params.id)) return res.status(400).json({ message: "Invalid booking." });
@@ -275,7 +298,7 @@ router.post("/api/bookings/:id/consume",
     });
 
 router.post("/api/bookings/:id/unconsume",
-    authenticate, requirePermission("bookings.consume"),
+    authenticate, requireAnyPermission("bookings.consume", "scan.use"),
     async (req, res, next) => {
         try {
             if (!isId(req.params.id)) return res.status(400).json({ message: "Invalid booking." });

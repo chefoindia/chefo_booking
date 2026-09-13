@@ -40,7 +40,7 @@ export function CutoffLine({ meal, today, className = "" }) {
  * canteen may still take a late one, but the customer is told plainly that it
  * is no longer their decision.
  */
-export function CutoffNotice({ meal, today, businessName, canRequest = true }) {
+export function CutoffNotice({ meal, today, businessName }) {
     const now = useNow(30000);
     const info = cutoffInfo(meal, now, today);
 
@@ -48,13 +48,16 @@ export function CutoffNotice({ meal, today, businessName, canRequest = true }) {
         return <div className="notice notice-bad">{info.line} Pick another day or another meal.</div>;
     }
     if (info.state === "closed") {
+        // No softening and no button: the deadline is where the customer's
+        // control ends. If the kitchen can still fit them in, that is a
+        // conversation at the counter, and saying so is more use than a
+        // "request" that used to sit unanswered.
         return (
-            <div className="notice notice-warn">
+            <div className="notice notice-bad">
                 <strong>Booking has closed for {meal.name}.</strong>{" "}
                 {info.line.replace(/^Booking for [^,]+ closed/, "It closed")}{" "}
-                {canRequest
-                    ? `You can still send this as a request — ${businessName || "the canteen"} has to accept it before you're counted, and they may already have started cooking.`
-                    : "Nothing more can be booked for this meal."}
+                Pick another meal or another day — or ask
+                {businessName ? ` ${businessName}` : " the canteen"} at the counter.
             </div>
         );
     }

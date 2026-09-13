@@ -1,9 +1,10 @@
 "use client";
 // Booking management — search, filter, inspect, and act on a customer's behalf.
 //
-// The operator's edits apply directly whatever the clock says. Sending them
-// through the approval queue would mean asking them to approve their own
-// request, which is theatre; after cutoff, their edit IS the decision.
+// The operator's edits apply directly whatever the clock says, and that is now
+// the ONLY way anything happens after a cutoff: a customer past the deadline
+// cannot book, change or cancel at all, so there is no queue to approve and no
+// pending half to the kitchen's number. Their edit IS the decision.
 //
 // Whether a meal was handed over rides alongside the status rather than inside
 // it: a confirmed booking is legitimately served or unserved, and squashing the
@@ -51,6 +52,7 @@ export default function BookingsPage() {
     // rewriting the URL under them would fight the back button.
     const [detail, setDetail] = useState(params.get("booking") || null);
     const [creating, setCreating] = useState(false);
+
 
     // The booking form and the filters both need the configured meal services
     // and variants. config.view is owner-gated, so anyone without it falls back
@@ -113,7 +115,7 @@ export default function BookingsPage() {
             <div className="page-head row-between wrap">
                 <div>
                     <h1 className="page-title">Bookings</h1>
-                    <p className="page-sub">Everything booked, with its full request history.</p>
+                    <p className="page-sub">Everything booked, with its full history.</p>
                 </div>
                 <div className="row wrap">
                     {access.can("reports.export") && (
@@ -126,6 +128,7 @@ export default function BookingsPage() {
                     )}
                 </div>
             </div>
+
 
             <div className="card card-pad" style={{ marginBottom: 14 }}>
                 <div className="filters">
