@@ -107,6 +107,7 @@ async function main() {
     app.use(require("../routes/requests"));
     app.use(require("../routes/config"));
     app.use(require("../routes/team"));
+    app.use(require("../routes/customerAccount"));
     app.use(require("../middleware/errors").notFound);
     app.use(require("../middleware/errors").errorHandler);
 
@@ -137,6 +138,12 @@ async function main() {
     const at = (hhmm) => zonedInstant(D, hhmm, 330);
     const BEFORE = at("09:00");
     const AFTER = at("11:00");
+
+    const shiftDays = (key, n) => {
+        const [y, m, d] = key.split("-").map(Number);
+        const t = new Date(Date.UTC(y, m - 1, d + n));
+        return t.toISOString().slice(0, 10);
+    };
 
     const party = (name, phone, extra = {}) => ({
         name, phone, partyType: "group", organisation: `${name} Site`, ...extra,
@@ -608,6 +615,282 @@ async function main() {
         allReqs.filter((x) => x.type === "change").every((x) => x.currentTotal >= 0 && x.requestedTotal >= 0));
     const aReqs = allReqs.filter((x) => String(x.bookingId) === String(a.booking._id));
     check("one booking carries several requests over its life", aReqs.length >= 2, String(aReqs.length));
+
+
+    /* ================= SCENARIO K =================
+       Business-defined booking questions. The whole point is that NOTHING
+       about the form is hardcoded: the operator defines the questions, the
+       customer answers them, and the answers are snapshotted onto the booking
+       so editing the question later never rewrites what was asked. */
+    section("K — business-defined booking questions");
+    r = await call("PUT", "/api/config/booking-fields", {
+        cookie: ownerCookie,
+        body: {
+            bookingFields: [
+                { label: "Employee ID", type: "text", required: true, sortOrder: 0 },
+                { label: "Department", type: "select", options: ["Ops", "Kitchen", "Admin"], required: false, sortOrder: 1 },
+                { label: "Allergy note", type: "textarea", required: false, sortOrder: 2 },
+                { label: "Gate pass", type: "text", required: false, mealTypeKeys: ["dinner"], sortOrder: 3 },
+            ],
+        },
+    });
+    check("questions saved", r.status === 200 && r.data.bookingFields.length === 4, JSON.stringify(r.data).slice(0, 200));
+    const empKey = r.data.bookingFields[0]?.key;
+    check("a stable key is derived from the label", empKey === "employee-id", String(empKey));
+
+    r = await call("GET", `/api/public/business/${SLUG}?date=${D}`);
+    check("public form is told what to ask", Array.isArray(r.data.business.bookingFields) && r.data.business.bookingFields.length === 4,
+        String(r.data.business?.bookingFields?.length));
+    check("scoping reaches the form",
+        r.data.business.bookingFields.find((f) => f.key === "gate-pass")?.mealTypeKeys?.[0] === "dinner");
+
+    r = await call("POST", `/api/public/business/${SLUG}/bookings`, {
+        body: {
+            mealTypeId: String(snacks._id), date: D, quantities: qty({ [veg._id]: 2 }),
+            party: party("Answers Co", "9800000091"),
+            answers: { "employee-id": "EMP-4417", department: "Kitchen" },
+        },
+    });
+    check("booking with answers accepted", r.status === 201, JSON.stringify(r.data).slice(0, 200));
+    const answered = r.data.booking;
+    check("answers are snapshotted with their label",
+        answered.answers?.some((x) => x.key === "employee-id" && x.value === "EMP-4417" && x.label === "Employee ID"),
+        JSON.stringify(answered.answers));
+    check("an unanswered optional question is not invented",
+        !answered.answers?.some((x) => x.key === "allergy-note"), JSON.stringify(answered.answers));
+
+    r = await call("POST", `/api/public/business/${SLUG}/bookings`, {
+        body: {
+            mealTypeId: String(snacks._id), date: D, quantities: qty({ [veg._id]: 1 }),
+            party: party("No Emp", "9800000092"), answers: { department: "Ops" },
+        },
+    });
+    check("a required question cannot be skipped", r.status === 400 && r.data.code === "ANSWER_REQUIRED",
+        `${r.status} ${r.data.code}`);
+
+    // The counter is not the public form. An operator taking a booking by
+    // phone may not have the customer's employee ID, and losing the booking
+    // over it would be worse than losing the answer. Same distinction the
+    // service already makes for acceptingBookings / customerBookable.
+    r = await call("POST", "/api/bookings", {
+        cookie: ownerCookie,
+        body: {
+            mealTypeId: String(snacks._id), date: D, quantities: qty({ [veg._id]: 1 }),
+            party: party("Counter Walk-in", "9800000099"),
+        },
+    });
+    check("the operator is not blocked by a question they cannot answer", r.status === 201, 
+        `${r.status} ${JSON.stringify(r.data).slice(0, 120)}`);
+    r = await call("POST", "/api/bookings", {
+        cookie: ownerCookie,
+        body: {
+            mealTypeId: String(snacks._id), date: D, quantities: qty({ [veg._id]: 1 }),
+            party: party("Counter Typo", "9800000100"), answers: { department: "Nowhere" },
+        },
+    });
+    check("but the operator still cannot record an off-list answer", r.status === 400,
+        `${r.status} ${r.data.code}`);
+
+    r = await call("POST", `/api/public/business/${SLUG}/bookings`, {
+        body: {
+            mealTypeId: String(snacks._id), date: D, quantities: qty({ [veg._id]: 1 }),
+            party: party("Bad Select", "9800000093"),
+            answers: { "employee-id": "E1", department: "Marketing" },
+        },
+    });
+    check("an off-list choice is refused", r.status === 400 && r.data.code === "BAD_ANSWER", `${r.status} ${r.data.code}`);
+
+    r = await call("POST", `/api/public/business/${SLUG}/bookings`, {
+        body: {
+            mealTypeId: String(snacks._id), date: D, quantities: qty({ [veg._id]: 1 }),
+            party: party("Smuggler", "9800000094"),
+            answers: { "employee-id": "E1", "secret-field": "x" },
+        },
+    });
+    check("a question the operator never defined is refused", r.status === 400 && r.data.code === "BAD_ANSWERS",
+        `${r.status} ${r.data.code}`);
+
+    r = await call("POST", `/api/public/business/${SLUG}/bookings`, {
+        body: {
+            mealTypeId: String(snacks._id), date: D, quantities: qty({ [veg._id]: 1 }),
+            party: party("Wrong Meal", "9800000095"),
+            answers: { "employee-id": "E1", "gate-pass": "GP-9" },
+        },
+    });
+    check("a question scoped to another meal is refused here", r.status === 400 && r.data.code === "BAD_ANSWERS",
+        `${r.status} ${r.data.code}`);
+
+    /* ================= SCENARIO L =================
+       The ticket IS the proof. A customer keeps no account, so possession of
+       the opaque ticket is what lets them (and only them) see the booking. */
+    section("L — booking ticket, its QR, and rehydrating a browser");
+    const ticket = answered.ticket;
+    check("every booking carries a ticket", typeof ticket === "string" && ticket.length === 22, String(ticket));
+    check("the ticket is not the reference", ticket !== answered.reference);
+
+    r = await call("GET", `/api/public/t/${ticket}`);
+    check("the ticket opens the booking with no phone", r.status === 200 && r.data.booking?.reference === answered.reference,
+        `${r.status}`);
+    check("the business is named on the ticket page", r.data.business?.slug === SLUG);
+    check("the ticket page says whether it was served", "consumed" in r.data.booking || "consumed" in r.data,
+        JSON.stringify(Object.keys(r.data)));
+
+    r = await call("GET", "/api/public/t/zzzzzzzzzzzzzzzzzzzzzz");
+    check("an unknown ticket is a flat 404, not an oracle", r.status === 404 && r.data.code === "NO_TICKET",
+        `${r.status} ${r.data.code}`);
+
+    const qrRes = await fetch(`${base}/api/public/t/${ticket}/qr.png`);
+    const qrBuf = Buffer.from(await qrRes.arrayBuffer());
+    check("the QR renders as a real PNG", qrRes.status === 200 && qrBuf.slice(1, 4).toString() === "PNG",
+        `${qrRes.status} ${qrBuf.slice(0, 8).toString("hex")}`);
+    check("the QR is cacheable", /max-age/.test(qrRes.headers.get("cache-control") || ""),
+        String(qrRes.headers.get("cache-control")));
+    // helmet() locks the whole API to CORP same-origin. The customer app is a
+    // different origin, so without an explicit relaxation here the <img> is
+    // refused by the browser and every customer sees a broken code at the
+    // counter — while curl and fetch() both still succeed, which is exactly
+    // how it survived the first round of testing.
+    check("the QR may be embedded from the customer app's origin",
+        (qrRes.headers.get("cross-origin-resource-policy") || "") === "cross-origin",
+        String(qrRes.headers.get("cross-origin-resource-policy")));
+
+    const secondBooking = await bookingService.createBooking({
+        businessId: business._id, mealTypeId: snacks._id, date: D,
+        quantities: qty({ [veg._id]: 3 }), party: party("Ledger Co", "9800000096"),
+        answers: { "employee-id": "EMP-2" }, now: BEFORE,
+    });
+    r = await call("POST", `/api/public/business/${SLUG}/tickets`, {
+        body: { tickets: [ticket, secondBooking.booking.ticket, "not-a-real-ticket-aaaa"] },
+    });
+    check("a browser can rehydrate several bookings at once", r.status === 200 && r.data.bookings.length === 2,
+        `${r.status} ${r.data.bookings?.length}`);
+    check("unknown tickets are dropped silently, not fatal",
+        r.data.bookings.every((x) => x.ticket === ticket || x.ticket === secondBooking.booking.ticket));
+    check("rehydrated bookings say what the customer may still do",
+        r.data.bookings.every((x) => "canEdit" in x && "canCancel" in x));
+    // The customer app says "you can still change this yourself for another
+    // 2 hours" and "closed 20 minutes ago". Neither sentence can be written
+    // from a boolean, so the deadline itself has to travel with the booking.
+    check("rehydrated bookings carry the deadline itself, not just whether it passed",
+        r.data.bookings.every((x) => "hasCutoff" in x && "cutoffAt" in x),
+        JSON.stringify(Object.keys(r.data.bookings[0] || {})));
+
+    /* ================= SCENARIO M ================= */
+    section("M — the calendar agrees with the booking form");
+    r = await call("GET", `/api/public/business/${SLUG}/calendar?from=${D}&to=${shiftDays(D, 6)}`);
+    check("calendar returns a span of days", r.status === 200 && r.data.days?.length === 7,
+        `${r.status} ${r.data.days?.length}`);
+    check("each day names the meals and their state",
+        r.data.days.every((d) => Array.isArray(d.meals) && d.meals.every((m) => "cutoffPassed" in m && "servedToday" in m)));
+    const calToday = r.data.days.find((d) => d.date === D);
+    const formToday = (await call("GET", `/api/public/business/${SLUG}?date=${D}`)).data;
+    const calLunch = calToday.meals.find((m) => String(m.id) === String(lunch._id));
+    const formLunch = formToday.mealTypes.find((m) => String(m.id) === String(lunch._id));
+    check("a calendar cell can never disagree with the form",
+        calLunch.cutoffPassed === formLunch.cutoffPassed && calLunch.servedToday === formLunch.servedToday,
+        `cal ${calLunch.cutoffPassed}/${calLunch.servedToday} vs form ${formLunch.cutoffPassed}/${formLunch.servedToday}`);
+    r = await call("GET", `/api/public/business/${SLUG}/calendar?from=${D}&to=${shiftDays(D, 400)}`);
+    check("an absurd span is clamped, not served", r.status === 200 && r.data.days.length <= 62, String(r.data.days?.length));
+
+    /* ================= SCENARIO N =================
+       Serving a meal is not a booking status — a served booking is still a
+       confirmed one. The scanner finds it by ticket and marks it once. */
+    section("N — scan at the counter and mark served");
+    r = await call("GET", `/api/bookings/by-ticket/${ticket}`, { cookie: ownerCookie });
+    check("the operator can open a booking from its ticket", r.status === 200 && r.data.booking?.reference === answered.reference,
+        `${r.status}`);
+    check("the scan result carries everything needed to serve",
+        Boolean(r.data.party) && Array.isArray(r.data.requests) && Boolean(r.data.cutoff),
+        JSON.stringify(Object.keys(r.data)));
+    check("the scan result carries the customer's answers",
+        r.data.booking.answers?.some((x) => x.key === "employee-id"), JSON.stringify(r.data.booking.answers));
+    const scannedId = r.data.booking._id;
+
+    r = await call("GET", "/api/bookings/by-ticket/zzzzzzzzzzzzzzzzzzzzzz", { cookie: ownerCookie });
+    check("an unknown ticket at the counter is a clean 404", r.status === 404 && r.data.code === "NO_TICKET",
+        `${r.status} ${r.data.code}`);
+
+    // A live operator who may READ bookings but was never granted
+    // bookings.consume. (The shared viewer is deactivated earlier in this
+    // suite on purpose, so reusing it would prove a dead session, not a
+    // missing permission.)
+    const serveRole = await Role.create({
+        businessId: business._id, name: "ZZ Counter No-Serve",
+        permissions: ["dashboard.view", "bookings.view"],
+    });
+    await BusinessUser.create({
+        businessId: business._id, name: "ZZ No-Serve", email: "zznoserve@test.local",
+        passwordHash: await bcrypt.hash("password123", 10), roleId: serveRole._id,
+    });
+    r = await call("POST", "/api/auth/login", { body: { identifier: "zznoserve@test.local", password: "password123" } });
+    const noServeCookie = (r.setCookie || "").split(";")[0];
+    r = await call("GET", `/api/bookings/by-ticket/${ticket}`, { cookie: noServeCookie });
+    check("they can still look a booking up", r.status === 200, String(r.status));
+    r = await call("POST", `/api/bookings/${scannedId}/consume`, { cookie: noServeCookie, body: { via: "scan" } });
+    check("but without bookings.consume they cannot serve it", r.status === 403, String(r.status));
+
+    r = await call("POST", `/api/bookings/${scannedId}/consume`, { cookie: ownerCookie, body: { via: "scan" } });
+    check("the owner marks it served", r.status === 200 && Boolean(r.data.booking?.consumedAt), `${r.status}`);
+    check("who served it is recorded", Boolean(r.data.booking.consumedByUserId), JSON.stringify(r.data.booking.consumedVia));
+    check("serving does NOT change the booking's status", r.data.booking.status === "confirmed", r.data.booking.status);
+
+    r = await call("POST", `/api/bookings/${scannedId}/consume`, { cookie: ownerCookie, body: { via: "scan" } });
+    check("it cannot be served twice", r.status === 409 && r.data.code === "ALREADY_CONSUMED", `${r.status} ${r.data.code}`);
+
+    r = await call("GET", `/api/public/t/${ticket}`);
+    check("the customer's own page now shows it as served", Boolean(r.data.booking?.consumed?.at || r.data.consumed?.at),
+        JSON.stringify(r.data.booking?.consumed || r.data.consumed));
+
+    r = await call("POST", `/api/bookings/${scannedId}/unconsume`, { cookie: ownerCookie, body: {} });
+    check("a mistake can be undone", r.status === 200 && !r.data.booking.consumedAt, `${r.status}`);
+    r = await call("POST", `/api/bookings/${scannedId}/consume`, { cookie: ownerCookie, body: { via: "manual" } });
+    check("and it can be served again afterwards", r.status === 200, String(r.status));
+
+    const pendingBooking = await bookingService.createBooking({
+        businessId: business._id, mealTypeId: lunch._id, date: D,
+        quantities: qty({ [veg._id]: 2 }), party: party("Not Yet", "9800000097"),
+        answers: { "employee-id": "EMP-P" }, now: AFTER,
+    });
+    r = await call("POST", `/api/bookings/${pendingBooking.booking._id}/consume`, { cookie: ownerCookie, body: { via: "scan" } });
+    check("a booking still awaiting approval cannot be served",
+        r.status === 409 && r.data.code === "CONSUME_PENDING", `${r.status} ${r.data.code}`);
+
+    const deadBooking = await bookingService.createBooking({
+        businessId: business._id, mealTypeId: snacks._id, date: D,
+        quantities: qty({ [veg._id]: 1 }), party: party("Gone", "9800000098"),
+        answers: { "employee-id": "E9" }, now: BEFORE,
+    });
+    await bookingService.cancelBooking({
+        businessId: business._id, bookingId: deadBooking.booking._id, byOperator: true,
+        actor: { userId: owner._id, name: owner.name }, now: BEFORE,
+    });
+    r = await call("POST", `/api/bookings/${deadBooking.booking._id}/consume`, { cookie: ownerCookie, body: { via: "scan" } });
+    check("a cancelled booking cannot be served", r.status === 409 && r.data.code === "NOT_CONSUMABLE",
+        `${r.status} ${r.data.code}`);
+
+    const serveAudit = await AuditLog.find({ businessId: business._id, bookingId: scannedId }).lean();
+    check("serving is written to the trail", serveAudit.some((x) => /served/i.test(x.action)),
+        serveAudit.map((x) => x.action).join(" | ").slice(0, 160));
+    check("undoing a served mark is written to the trail too",
+        serveAudit.some((x) => /undid|undo/i.test(x.action)),
+        serveAudit.map((x) => x.action).join(" | ").slice(0, 160));
+
+    /* ================= SCENARIO O ================= */
+    section("O — the optional customer account");
+    r = await call("GET", `/api/public/business/${SLUG}/account/me`);
+    check("a signed-out visitor is answered calmly, not with a 401",
+        r.status === 200 && r.data.party === null, `${r.status} ${JSON.stringify(r.data).slice(0, 80)}`);
+
+    r = await call("POST", `/api/public/business/${SLUG}/account/start`, { body: { phone: "9800000091" } });
+    check("an existing customer is recognised before any OTP", r.status === 200 && r.data.exists === true,
+        `${r.status} ${JSON.stringify(r.data)}`);
+    r = await call("POST", `/api/public/business/${SLUG}/account/start`, { body: { phone: "9700000000" } });
+    check("a new number is reported as new", r.status === 200 && r.data.exists === false, JSON.stringify(r.data));
+
+    r = await call("POST", `/api/public/business/${SLUG}/account/verify`, {
+        body: { name: "Faker", phone: "9800000091", idToken: "not-a-real-token" },
+    });
+    check("a forged OTP token cannot create an account", r.status >= 400, String(r.status));
 
     /* ---------- cleanup ---------- */
     server.close();

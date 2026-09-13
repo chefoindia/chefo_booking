@@ -20,8 +20,13 @@ const MODULES = [
         hint: "Today's preparation counts and workload.",
     },
     {
-        key: "bookings", label: "Bookings", actions: ["view", "create", "edit", "cancel"],
-        hint: "Viewing bookings, and creating or amending them on a customer's behalf.",
+        // `consume` is separate from `edit` on purpose. Marking a booking as
+        // served is the counter's job — the person handing over the food, often
+        // on a phone at the hatch — and it does not change what was booked.
+        // Anyone trusted to scan a ticket should not thereby be trusted to
+        // rewrite quantities.
+        key: "bookings", label: "Bookings", actions: ["view", "create", "edit", "cancel", "consume"],
+        hint: "Viewing bookings, creating or amending them on a customer's behalf, and marking them served at the counter.",
     },
     {
         key: "requests", label: "Approval queue", actions: ["view", "resolve"],

@@ -81,6 +81,47 @@ const businessSchema = new mongoose.Schema(
             ]),
         },
 
+        /* ---- CUSTOM BOOKING QUESTIONS ---------------------------------------
+           The escape hatch that stops `rules` growing a boolean per customer.
+           A hostel wants a room number, a project site wants a gate pass, a
+           guest house wants an arrival time — none of those belong in a schema
+           every business shares, so the business defines its own questions and
+           the booking form renders them.
+
+           `key` is the STABLE identity and `label` is the display text: renaming
+           the label must not orphan the answers already recorded against the
+           key. Fields are deactivated rather than deleted for the same reason —
+           and because answers are snapshotted onto the booking, removing a
+           question here never rewrites what an old booking said.
+
+           Empty mealTypeKeys / partyTypeKeys mean "everywhere". Scoping exists
+           because "which shift?" is a dinner question, and asking it at
+           breakfast is how a form becomes noise people stop reading. */
+        bookingFields: {
+            type: [
+                {
+                    key: { type: String, required: true, trim: true },
+                    label: { type: String, required: true, trim: true },
+                    type: {
+                        type: String,
+                        enum: ["text", "textarea", "number", "tel", "email", "select", "date", "checkbox"],
+                        default: "text",
+                    },
+                    // Only meaningful for type "select"; ignored otherwise.
+                    options: { type: [String], default: [] },
+                    placeholder: { type: String, default: "" },
+                    help: { type: String, default: "" },
+                    required: { type: Boolean, default: false },
+                    active: { type: Boolean, default: true },
+                    // Empty = applies to every meal service / party type.
+                    mealTypeKeys: { type: [String], default: [] },
+                    partyTypeKeys: { type: [String], default: [] },
+                    sortOrder: { type: Number, default: 0 },
+                },
+            ],
+            default: () => ([]),
+        },
+
         // Human-readable booking references are BK-<counter> per business, so
         // two businesses can both have BK-1041 without collision. Incremented
         // atomically ($inc) when a booking is created.

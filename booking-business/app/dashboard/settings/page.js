@@ -19,7 +19,7 @@ import { Field, Input, Select, Textarea, Check } from "@/components/Field";
 import Drawer from "@/components/Drawer";
 import ClockTimeInput from "@/components/ClockTimeInput";
 import Empty from "@/components/Empty";
-import { SkeletonTiles, SkeletonCards } from "@/components/Skeleton";
+import { SkeletonTiles, SkeletonCards, SkeletonTable } from "@/components/Skeleton";
 
 const RAILS = ["rail-breakfast", "rail-lunch", "rail-dinner"];
 const railFor = (m, i) => {
@@ -152,7 +152,9 @@ export default function SettingsPage() {
             setConfirm(null);
             if (after) await after(); else await load();
         } catch (e) {
-            toast("error", "Couldn't save", e.message);
+            // A 403 is not a failure to state as one: the operator is signed in
+            // and the save was refused, which is a different sentence entirely.
+            toast("error", e.status === 403 ? "Not allowed" : "Couldn't save", e.message);
         } finally { setBusy(false); }
     };
     const ask = (cfg) => setConfirm(cfg);
@@ -200,6 +202,7 @@ export default function SettingsPage() {
                         <OptionsSection variants={config.variants} mealTypes={config.mealTypes} canEdit={canEdit} ask={ask} run={runConfirmed} />
                         <RulesSection business={b} canEdit={canEdit} ask={ask} run={runConfirmed} />
                         <PartyTypesSection business={b} canEdit={canEdit} ask={ask} run={runConfirmed} />
+                        <BookingQuestionsSection mealTypes={config.mealTypes} partyTypes={b.partyTypes || []} canEdit={canEdit} ask={ask} run={runConfirmed} />
                         <NotificationsSection user={access.user} ask={ask} run={runConfirmed} />
                     </div>
                 )}
@@ -868,5 +871,437 @@ function PartyTypesSection({ business, canEdit, ask, run }) {
                 </>
             )}
         </section>
+    );
+}
+
+/* ------------------------------------------------------------------ */
+/* WHAT YOU ASK CUSTOMERS — custom booking questions                    */
+/* ------------------------------------------------------------------ */
+// WHY A REPLACE-ALL LIST, EDITED LOCALLY AND SAVED ONCE. An answer is snapshot
+// onto the booking at the moment it is given, so this list is never a record of
+// anything — it is only "what we ask from now on". That makes one ordered array
+// the honest model: adding, renaming, reordering and removing are all edits to
+// a single document, and none of them can reach backwards into an answer
+// somebody already gave. Hence local edits, one confirmed write.
+//
+// THE KEY IS THE THREAD between a question and every answer already filed under
+// it, which is exactly why the operator may never type it: it is derived from
+// the label once, shown as read-only mono afterwards, and a rename leaves it
+// alone. Showing it (rather than hiding it as an implementation detail) is what
+// makes "renaming is safe, removing is not retroactive" believable.
+const FIELD_TYPES = [
+    { value: "text", label: "Short text", note: "One line — a room number, a name." },
+    { value: "textarea", label: "Long text", note: "A few lines — instructions, an allergy note." },
+    { value: "number", label: "Number", note: "Digits only — headcount, floor, gate." },
+    { value: "tel", label: "Phone number", note: "Opens the number pad on a phone." },
+    { value: "email", label: "Email", note: "The browser checks it looks like an address." },
+    { value: "select", label: "Choose from a list", note: "The customer picks one of your options." },
+    { value: "date", label: "Date", note: "A date picker." },
+    { value: "checkbox", label: "Yes / no tick", note: "Stored as Yes or No." },
+];
+const typeLabel = (t) => (FIELD_TYPES.find((x) => x.value === t) || FIELD_TYPES[0]).label;
+
+// Mirrors the server's slugify so the operator can see the key a new question
+// will get BEFORE saving. The server remains the authority — this is a preview.
+const slugKey = (v) => String(v || "").toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
+
+const blankQuestion = () => ({
+    key: "", label: "", type: "text", options: [], placeholder: "", help: "",
+    required: false, active: true, mealTypeKeys: [], partyTypeKeys: [],
+});
+
+// One shape for comparison and for the wire, so "has anything changed?" can be
+// a string comparison rather than a hand-written diff that drifts.
+const normaliseQuestion = (f, i) => ({
+    key: f.key || "",
+    label: String(f.label || "").trim(),
+    type: f.type || "text",
+    options: (f.type === "select" ? (f.options || []) : []).map((o) => String(o).trim()).filter(Boolean),
+    placeholder: String(f.placeholder || "").trim(),
+    help: String(f.help || "").trim(),
+    required: Boolean(f.required),
+    active: f.active !== false,
+    mealTypeKeys: [...(f.mealTypeKeys || [])],
+    partyTypeKeys: [...(f.partyTypeKeys || [])],
+    sortOrder: i,
+});
+const fingerprint = (list) => JSON.stringify(list.map(normaliseQuestion));
+
+// A scope key may point at a meal service or customer type that has since been
+// renamed away; showing the raw key beats showing nothing.
+const namesFor = (keys, rows, keyProp, nameProp) =>
+    keys.map((k) => rows.find((r) => r[keyProp] === k)?.[nameProp] || k).join(", ");
+
+function BookingQuestionsSection({ mealTypes, partyTypes, canEdit, ask, run }) {
+    const [loading, setLoading] = useState(true);
+    const [loadErr, setLoadErr] = useState("");
+    const [saved, setSaved] = useState([]);       // what the server last told us
+    const [fields, setFields] = useState([]);     // the working copy
+    const [editing, setEditing] = useState(null); // drawer form: new or existing
+    const [previewMeal, setPreviewMeal] = useState("");
+    const [previewParty, setPreviewParty] = useState("");
+
+    const activeMeals = mealTypes.filter((m) => m.active);
+    const activeParties = partyTypes.filter((p) => p.active !== false && p.key);
+
+    const pull = useCallback(async () => {
+        try {
+            const r = await get("/api/config/booking-fields");
+            const list = (r.bookingFields || [])
+                .map((f) => ({
+                    ...f,
+                    options: f.options || [], mealTypeKeys: f.mealTypeKeys || [], partyTypeKeys: f.partyTypeKeys || [],
+                }))
+                .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+            setSaved(list);
+            setFields(list.map((f) => ({ ...f })));
+            setLoadErr("");
+        } catch (e) {
+            setLoadErr(e.status === 403 ? "Your role can't view this business's configuration." : e.message);
+        } finally { setLoading(false); }
+    }, []);
+
+    useEffect(() => { pull(); }, [pull]);
+
+    const move = (i, dir) => setFields((list) => {
+        const j = i + dir;
+        if (j < 0 || j >= list.length) return list;
+        const next = [...list];
+        [next[i], next[j]] = [next[j], next[i]];
+        return next;
+    });
+    const remove = (i) => setFields((list) => list.filter((_, j) => j !== i));
+
+    const applyEditing = () => {
+        const f = editing;
+        const row = {
+            key: f.key || "",
+            label: f.label.trim(),
+            type: f.type,
+            options: f.type === "select" ? f.optionsText.split(",").map((s) => s.trim()).filter(Boolean).slice(0, 30) : [],
+            placeholder: String(f.placeholder || "").trim(),
+            help: String(f.help || "").trim(),
+            required: Boolean(f.required),
+            active: Boolean(f.active),
+            mealTypeKeys: f.mealTypeKeys,
+            partyTypeKeys: f.partyTypeKeys,
+        };
+        setFields((list) => (f._index === null ? [...list, row] : list.map((x, i) => (i === f._index ? { ...x, ...row } : x))));
+        setEditing(null);
+    };
+
+    const dirty = fingerprint(fields) !== fingerprint(saved);
+
+    // What the save would do, stated the way the confirmation has to state it.
+    const liveOnes = fields.filter((f) => f.active && String(f.label).trim());
+    const requiredOnes = liveOnes.filter((f) => f.required);
+    const removed = saved.filter((s) => s.key && !fields.some((f) => f.key === s.key));
+    const renamed = fields.filter((f) => f.key && saved.some((s) => s.key === f.key && s.label !== f.label));
+
+    const keysNow = fields.map((f) => f.key || slugKey(f.label));
+    const problems = [...new Set([
+        ...(fields.some((f) => !String(f.label).trim()) ? ["Every question needs a label."] : []),
+        ...fields.filter((f) => f.type === "select" && !(f.options || []).filter(Boolean).length).map((f) => `“${f.label || "A question"}” asks the customer to choose, but has no options.`),
+        ...(keysNow.some((k, i) => k && keysNow.indexOf(k) !== i) ? ["Two questions would be stored under the same key — change one of the labels."] : []),
+    ])];
+
+    const scopeText = (f) => {
+        const meals = f.mealTypeKeys?.length ? namesFor(f.mealTypeKeys, mealTypes, "key", "name") : "All meals";
+        const parties = f.partyTypeKeys?.length ? namesFor(f.partyTypeKeys, partyTypes, "key", "label") : "all customer types";
+        return `${meals} · ${parties}`;
+    };
+
+    const confirmSave = () => ask({
+        title: "Save what you ask customers?",
+        danger: removed.length > 0,
+        body: [
+            liveOnes.length
+                ? `Your booking page will ask ${liveOnes.length} question${liveOnes.length === 1 ? "" : "s"}: ${liveOnes.map((f) => f.label).join(", ")}.`
+                : "Your booking page will ask no extra questions — customers see the standard booking form only.",
+            requiredOnes.length ? `${requiredOnes.length} of them must be answered before a booking can be made.` : "",
+            removed.length ? `${removed.length} question${removed.length === 1 ? "" : "s"} (${removed.map((r) => r.label).join(", ")}) will stop being asked.` : "",
+            renamed.length ? "Renamed questions keep the key their old answers are filed under." : "",
+            "Answers already recorded against past bookings are untouched — they were stored with the booking itself, not here.",
+        ].filter(Boolean).join(" "),
+        label: "Save questions",
+        action: run(
+            () => put("/api/config/booking-fields", {
+                bookingFields: fields.map((f, i) => {
+                    const row = normaliseQuestion(f, i);
+                    // A new question carries no key: the server slugifies the
+                    // label into one. An existing one keeps the key it has.
+                    if (!row.key) delete row.key;
+                    return row;
+                }),
+            }),
+            "Questions saved", "Your booking page asks these from now on.",
+            pull
+        ),
+    });
+
+    // Discarding is local — nothing has reached the server — but it still throws
+    // away work, so it goes through the same confirmation as everything else.
+    const confirmDiscard = () => ask({
+        title: "Discard your unsaved changes?",
+        danger: true,
+        body: "The questions go back to what is currently saved. Your booking page is unaffected either way — these edits never left this screen.",
+        label: "Discard changes",
+        action: run(async () => { setFields(saved.map((f) => ({ ...f }))); },
+            "Changes discarded", "Back to what's saved.", async () => { }),
+    });
+
+    // The preview answers "what does a customer actually see?", so it filters by
+    // the same scoping rule the booking page will apply.
+    const previewFields = fields.filter((f) => f.active && String(f.label).trim()
+        && (!previewMeal || !f.mealTypeKeys?.length || f.mealTypeKeys.includes(previewMeal))
+        && (!previewParty || !f.partyTypeKeys?.length || f.partyTypeKeys.includes(previewParty)));
+
+    return (
+        <section id="sec-questions" className="card card-pad sec-anchor">
+            <div className="row-between wrap" style={{ marginBottom: 2 }}>
+                <h2 style={{ fontSize: 16 }}>What you ask customers</h2>
+                {canEdit && !loading && !loadErr && (
+                    <button className="btn btn-primary btn-sm" onClick={() => setEditing({ ...blankQuestion(), _index: null, optionsText: "" })}>+ Add question</button>
+                )}
+            </div>
+            <p className="why">
+                Your own questions, asked on your public booking page underneath the meal and quantity — a room number,
+                a delivery gate, whether a dish must be Jain. Each customer&apos;s answers are stored with their booking
+                and shown to you on it.
+            </p>
+
+            <div className="banner banner-warn" style={{ marginBottom: 14 }}>
+                Removing a question stops it being asked from now on. It does <strong>not</strong> erase answers already
+                recorded against past bookings — those were saved onto the booking when it was made, and stay readable
+                exactly as they were answered.
+            </div>
+
+            {loadErr && <div className="banner banner-danger" style={{ marginBottom: 14 }}>Couldn&apos;t load your questions — {loadErr}</div>}
+
+            {loading ? (
+                <SkeletonTable rows={3} cols={4} />
+            ) : loadErr ? null : !fields.length ? (
+                <Empty title="No questions yet" note="Customers are asked only the standard details — who they are, which meal, how many. Add a question if you need more." icon="requests"
+                    action={canEdit && <button className="btn btn-primary btn-sm" onClick={() => setEditing({ ...blankQuestion(), _index: null, optionsText: "" })}>Add your first question</button>} />
+            ) : (
+                <div className="table-wrap">
+                    <table className="tbl">
+                        <thead><tr><th>Question</th><th>Type</th><th>Shown for</th><th>Answer</th><th>Status</th><th>Order</th><th></th></tr></thead>
+                        <tbody>
+                            {fields.map((f, i) => (
+                                <tr key={f.key || `new-${i}`}>
+                                    <td>
+                                        <strong>{f.label || "Untitled question"}</strong>
+                                        <div className="xsmall faint mono">
+                                            {f.key || `${slugKey(f.label) || "…"} (new)`}
+                                        </div>
+                                    </td>
+                                    <td className="small muted">{typeLabel(f.type)}</td>
+                                    <td className="small muted">{scopeText(f)}</td>
+                                    <td>{f.required ? <span className="badge badge-amber">Required</span> : <span className="small muted">Optional</span>}</td>
+                                    <td><span className={`badge ${f.active !== false ? "badge-green" : "badge-gray"}`}>{f.active !== false ? "Asked" : "Hidden"}</span></td>
+                                    <td>
+                                        <div className="row" style={{ gap: 2 }}>
+                                            <button className="btn btn-ghost btn-sm" disabled={!canEdit || i === 0} onClick={() => move(i, -1)} aria-label={`Move ${f.label} up`}>↑</button>
+                                            <button className="btn btn-ghost btn-sm" disabled={!canEdit || i === fields.length - 1} onClick={() => move(i, 1)} aria-label={`Move ${f.label} down`}>↓</button>
+                                        </div>
+                                    </td>
+                                    <td>
+                                        {canEdit && (
+                                            <div className="row" style={{ gap: 4 }}>
+                                                <button className="btn btn-ghost btn-sm" onClick={() => setEditing({ ...f, _index: i, optionsText: (f.options || []).join(", ") })}>Edit</button>
+                                                <button className="btn btn-ghost btn-sm" onClick={() => remove(i)}>Remove</button>
+                                            </div>
+                                        )}
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            )}
+
+            {!loading && !loadErr && (
+                <>
+                    <div className="qf-preview" style={{ marginTop: 14 }}>
+                        <div className="row-between wrap" style={{ marginBottom: 12 }}>
+                            <div>
+                                <div className="num-label">Live preview</div>
+                                <div className="xsmall faint">This is the part of your booking page these questions build.</div>
+                            </div>
+                            <div className="row wrap" style={{ gap: 6 }}>
+                                <Select value={previewMeal} onChange={(e) => setPreviewMeal(e.target.value)} className="select qf-mini" aria-label="Preview meal service">
+                                    <option value="">Any meal service</option>
+                                    {activeMeals.map((m) => <option key={m.key} value={m.key}>{m.name}</option>)}
+                                </Select>
+                                <Select value={previewParty} onChange={(e) => setPreviewParty(e.target.value)} className="select qf-mini" aria-label="Preview customer type">
+                                    <option value="">Any customer type</option>
+                                    {activeParties.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+                                </Select>
+                            </div>
+                        </div>
+                        <div className="qf-phone">
+                            <div className="qf-phone-head">A few more details</div>
+                            {!previewFields.length ? (
+                                <p className="small faint" style={{ margin: "10px 0 14px" }}>
+                                    Nothing extra is asked here — the customer goes straight from choosing their meal to confirming.
+                                </p>
+                            ) : previewFields.map((f, i) => <QuestionPreview key={f.key || `p-${i}`} f={f} />)}
+                            <button className="btn btn-primary btn-block" disabled style={{ marginTop: 4 }}>Confirm booking</button>
+                        </div>
+                    </div>
+
+                    {canEdit && (
+                        <>
+                            {problems.map((p, i) => (
+                                <p key={i} className="xsmall" style={{ color: "var(--brick)", margin: "10px 0 0" }}>{p}</p>
+                            ))}
+                            <div className="row wrap" style={{ gap: 8, marginTop: 14 }}>
+                                <button className="btn btn-primary" onClick={confirmSave} disabled={!dirty || problems.length > 0}>Save questions…</button>
+                                {dirty && <button className="btn btn-ghost btn-sm" onClick={confirmDiscard}>Discard changes…</button>}
+                                {!dirty && <span className="xsmall faint">Everything here is saved.</span>}
+                            </div>
+                        </>
+                    )}
+                </>
+            )}
+
+            <Drawer open={Boolean(editing)} onClose={() => setEditing(null)} wide
+                title={editing?._index === null ? "New question" : `Edit “${editing?.label || "question"}”`}
+                footer={editing && (
+                    <>
+                        <button className="btn btn-secondary" onClick={() => setEditing(null)}>Cancel</button>
+                        <button className="btn btn-primary" onClick={applyEditing}
+                            disabled={!editing.label.trim() || (editing.type === "select" && !editing.optionsText.split(",").map((s) => s.trim()).filter(Boolean).length)}>
+                            {editing._index === null ? "Add question" : "Update question"}
+                        </button>
+                    </>
+                )}>
+                {editing && (
+                    <QuestionForm
+                        f={editing}
+                        set={(k, v) => setEditing((p) => ({ ...p, [k]: v }))}
+                        meals={activeMeals}
+                        parties={activeParties}
+                    />
+                )}
+            </Drawer>
+
+            <style>{`
+              .qf-preview { border: 1px dashed var(--border-strong); border-radius: var(--radius); padding: 16px; background: var(--paper); }
+              .qf-phone { max-width: 420px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
+              .qf-phone-head { font-family: var(--font-display), sans-serif; font-size: 14px; font-weight: 700; margin-bottom: 12px; }
+              .qf-req { color: var(--brick); margin-left: 3px; }
+              .qf-mini { width: auto; min-width: 150px; padding: 7px 10px; font-size: 13px; }
+            `}</style>
+        </section>
+    );
+}
+
+// The preview renders the real form controls, disabled. A drawing of a field
+// would let the two drift; a disabled copy of the same components cannot.
+function QuestionPreview({ f }) {
+    const hint = f.help || undefined;
+    if (f.type === "checkbox") {
+        return (
+            <div className="field">
+                <Check label={<>{f.label}{f.required && <span className="qf-req">*</span>}</>} checked={false} readOnly disabled />
+                {hint && <span className="hint">{hint}</span>}
+            </div>
+        );
+    }
+    const label = <>{f.label}{f.required && <span className="qf-req">*</span>}</>;
+    return (
+        <Field label={label} hint={hint}>
+            {f.type === "textarea" ? (
+                <Textarea rows={2} disabled placeholder={f.placeholder || ""} style={{ minHeight: 60 }} />
+            ) : f.type === "select" ? (
+                <Select disabled defaultValue="">
+                    <option value="">{f.placeholder || "Choose…"}</option>
+                    {(f.options || []).map((o, i) => <option key={i} value={o}>{o}</option>)}
+                </Select>
+            ) : (
+                <Input type={f.type === "date" ? "date" : f.type} disabled placeholder={f.placeholder || ""} />
+            )}
+        </Field>
+    );
+}
+
+function QuestionForm({ f, set, meals, parties }) {
+    const type = FIELD_TYPES.find((t) => t.value === f.type) || FIELD_TYPES[0];
+    const takesPlaceholder = ["text", "textarea", "number", "tel", "email", "select"].includes(f.type);
+    const toggle = (k, value) => set(k, (f[k] || []).includes(value) ? f[k].filter((x) => x !== value) : [...(f[k] || []), value]);
+
+    return (
+        <div>
+            <Field label="The question, as the customer reads it" hint="Ask it plainly — “Which gate should we deliver to?” beats “Gate”.">
+                <Input value={f.label} autoFocus maxLength={80} onChange={(e) => set("label", e.target.value)} />
+            </Field>
+
+            {f.key ? (
+                <div className="banner banner-info" style={{ marginBottom: 14 }}>
+                    <div className="row wrap" style={{ gap: 8 }}>
+                        <strong className="small">Stored as</strong>
+                        <span className="mono small">{f.key}</span>
+                    </div>
+                    <p className="xsmall" style={{ marginTop: 5 }}>
+                        Every answer ever given to this question is filed under that key, so it never changes. Reword the
+                        question as often as you like — the old answers stay attached to it.
+                    </p>
+                </div>
+            ) : (
+                <p className="xsmall faint" style={{ margin: "-8px 0 14px" }}>
+                    Will be stored as <span className="mono">{slugKey(f.label) || "…"}</span> — the key answers are filed
+                    under. It is fixed once saved; the wording above can change later.
+                </p>
+            )}
+
+            <Field label="Kind of answer" hint={type.note}>
+                <Select value={f.type} onChange={(e) => set("type", e.target.value)}>
+                    {FIELD_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                </Select>
+            </Field>
+
+            {f.type === "select" && (
+                <Field label="Options" hint="Separate them with commas — Ground floor, First floor, Terrace.">
+                    <Textarea rows={2} value={f.optionsText} onChange={(e) => set("optionsText", e.target.value)} style={{ minHeight: 60 }} />
+                </Field>
+            )}
+
+            {takesPlaceholder && (
+                <Field label="Placeholder (optional)" hint="Greyed-out example text inside the box.">
+                    <Input value={f.placeholder || ""} maxLength={80} onChange={(e) => set("placeholder", e.target.value)} />
+                </Field>
+            )}
+
+            <Field label="Help text (optional)" hint="A line under the box, for anything the question itself can't say.">
+                <Input value={f.help || ""} maxLength={160} onChange={(e) => set("help", e.target.value)} />
+            </Field>
+
+            <div className="stack-sm" style={{ marginBottom: 14 }}>
+                <Check label="Must be answered" checked={Boolean(f.required)} onChange={(e) => set("required", e.target.checked)} />
+                <p className="xsmall faint" style={{ marginLeft: 26 }}>The customer can&apos;t confirm a booking until they answer.</p>
+                <Check label="Ask it" checked={Boolean(f.active)} onChange={(e) => set("active", e.target.checked)} />
+                <p className="xsmall faint" style={{ marginLeft: 26 }}>Untick to retire the question without removing it — past answers stay, and you can switch it back on.</p>
+            </div>
+
+            <Field label="Only for these meal services" hint="Leave everything unticked to ask it for every meal service.">
+                <div className="stack-sm">
+                    {meals.map((m) => (
+                        <Check key={m.key} label={m.name} checked={(f.mealTypeKeys || []).includes(m.key)} onChange={() => toggle("mealTypeKeys", m.key)} />
+                    ))}
+                    {!meals.length && <p className="xsmall faint">No active meal services yet.</p>}
+                </div>
+            </Field>
+
+            <Field label="Only for these customer types" hint="Leave everything unticked to ask it of every customer.">
+                <div className="stack-sm">
+                    {parties.map((p) => (
+                        <Check key={p.key} label={p.label} checked={(f.partyTypeKeys || []).includes(p.key)} onChange={() => toggle("partyTypeKeys", p.key)} />
+                    ))}
+                    {!parties.length && <p className="xsmall faint">No customer types configured yet.</p>}
+                </div>
+            </Field>
+        </div>
     );
 }

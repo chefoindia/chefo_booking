@@ -388,6 +388,154 @@ router.put("/api/config/party-types",
     });
 
 /* ------------------------------------------------------------------ */
+/* BOOKING FORM QUESTIONS                                               */
+/* ------------------------------------------------------------------ */
+// A canteen needs a floor number, a guest house needs a room, a project site
+// needs a gate. Hardcoding any of those would make the form wrong for everyone
+// else, so the extra questions are configuration — the same decision meal
+// services and variants already embody.
+//
+// THE ANSWERS ARE SNAPSHOTTED ONTO THE BOOKING at write time (key, label, type
+// and value together), which is what makes the two rules below non-negotiable.
+const FIELD_TYPES = ["text", "textarea", "number", "tel", "email", "select", "date", "checkbox"];
+const MAX_FIELDS = 20;
+const MAX_OPTIONS = 12;
+
+/** Slugified, de-duplicated key list — for the meal/party filters on a field. */
+const keyList = (v, max = 24) =>
+    Array.isArray(v) ? [...new Set(v.map((k) => slugify(k)).filter(Boolean))].slice(0, max) : [];
+
+router.get("/api/config/booking-fields",
+    authenticate, requirePermission("config.view"),
+    async (req, res, next) => {
+        try {
+            const business = await Business.findById(req.businessId).select("bookingFields").lean();
+            res.json({ bookingFields: business?.bookingFields || [] });
+        } catch (err) { next(err); }
+    });
+
+/**
+ * Replace the whole list.
+ *
+ * REPLACE-ALL rather than per-field CRUD because the editor is a reorderable
+ * list: "field 3 moved above field 1 and field 2 was deleted" is one intention,
+ * and three separate calls to express it can half-succeed.
+ *
+ * THE KEY IS NEVER REGENERATED FROM AN EDITED LABEL. Every answer already
+ * recorded on a past booking is stored against its key; renaming "Floor" to
+ * "Floor / Wing" and re-slugifying would orphan every one of them, and the
+ * booking they belong to would show a question nobody can match up. So a key
+ * the client sends back is honoured as-is, and a key is only derived from a
+ * label when the field is genuinely new.
+ */
+router.put("/api/config/booking-fields",
+    authenticate, requirePermission("config.edit"),
+    async (req, res, next) => {
+        try {
+            const incoming = Array.isArray(req.body?.bookingFields) ? req.body.bookingFields : null;
+            // An empty list is a real instruction — "ask nothing extra" — so
+            // only a missing or non-array body is refused.
+            if (!incoming) return res.status(400).json({ message: "Send the list of questions to save." });
+            if (incoming.length > MAX_FIELDS) {
+                return res.status(400).json({ message: `Keep the booking form to ${MAX_FIELDS} extra questions or fewer.` });
+            }
+
+            const business = await Business.findById(req.businessId);
+            if (!business) return res.status(404).json({ message: "Business not found." });
+
+            const existingKeys = new Set((business.bookingFields || []).map((f) => f.key));
+            const before = (business.bookingFields || []).map((f) => ({ key: f.key, label: f.label, active: f.active }));
+
+            const seen = new Set();
+            const cleaned = [];
+
+            for (let i = 0; i < incoming.length; i++) {
+                const f = incoming[i] || {};
+                const label = clean(f.label, 80);
+                // A question with nothing to ask is not a question. Dropped
+                // rather than refused, so one blank row left in the editor
+                // cannot make the whole form un-saveable.
+                if (!label) continue;
+
+                const type = String(f.type || "text");
+                if (!FIELD_TYPES.includes(type)) {
+                    return res.status(400).json({ message: `"${label}": choose a valid answer type.` });
+                }
+
+                const options = type === "select"
+                    ? [...new Set(
+                        (Array.isArray(f.options) ? f.options : [])
+                            .map((o) => clean(o, 60)).filter(Boolean)
+                    )].slice(0, MAX_OPTIONS)
+                    : [];
+                if (type === "select" && !options.length) {
+                    return res.status(400).json({ message: `"${label}" is a dropdown, so give it at least one option.` });
+                }
+
+                // Stability, in order of preference: a key that already exists
+                // wins outright; any other key the client sends is kept (a
+                // freshly-created field keeps the id its editor gave it); only
+                // then is one derived from the label.
+                const sent = slugify(f.key);
+                let key = (sent && existingKeys.has(sent)) ? sent : (sent || slugify(label) || `question-${i + 1}`);
+                if (seen.has(key)) {
+                    let n = 2;
+                    while (seen.has(`${key}-${n}`)) n++;
+                    key = `${key}-${n}`;
+                }
+                seen.add(key);
+
+                // Built property by property: assigning the submitted object
+                // wholesale is how an unknown field ends up persisted, and
+                // Mixed-typed junk on a Business document is forever.
+                cleaned.push({
+                    key,
+                    label,
+                    type,
+                    options,
+                    placeholder: clean(f.placeholder, 80),
+                    help: clean(f.help, 160),
+                    required: Boolean(f.required),
+                    active: f.active === undefined ? true : Boolean(f.active),
+                    // Empty means "every meal service" / "every party type".
+                    // Keys rather than ids, because these lists are themselves
+                    // configuration and a key is the stable half of one.
+                    mealTypeKeys: keyList(f.mealTypeKeys),
+                    partyTypeKeys: keyList(f.partyTypeKeys),
+                    sortOrder: Number.isInteger(f.sortOrder) ? f.sortOrder : i,
+                });
+            }
+
+            business.bookingFields = cleaned;
+            await business.save();
+
+            const after = cleaned.map((f) => ({ key: f.key, label: f.label, active: f.active }));
+            record({
+                businessId: req.businessId, actor: req.actor, requestMeta: meta(req),
+                action: "Updated the booking form questions",
+                before: { bookingFields: before }, after: { bookingFields: after },
+            });
+            notify("config.changed", {
+                businessId: req.businessId, actor: req.actor, requestMeta: meta(req),
+                title: "Booking form questions changed",
+                summary: "The extra questions asked on your booking page were updated. Answers already recorded on past bookings are unchanged.",
+                rows: [
+                    {
+                        label: "Questions",
+                        value: cleaned.length
+                            ? cleaned.map((f) => `${f.label}${f.active ? "" : " (hidden)"}${f.required ? " *" : ""}`).join(", ")
+                            : "None",
+                    },
+                    { label: "Asked on the form", value: String(cleaned.filter((f) => f.active).length) },
+                ],
+                concern: CONCERN.config,
+            });
+
+            res.json({ bookingFields: business.bookingFields });
+        } catch (err) { next(err); }
+    });
+
+/* ------------------------------------------------------------------ */
 /* QR POSTER                                                            */
 /* ------------------------------------------------------------------ */
 // The poster is a presentation document the dashboard's editor owns; the

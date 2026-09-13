@@ -20,6 +20,7 @@ const ICONS = {
     requests: <><path d="M4 5h16v10H8l-4 4z" /><line x1="8" y1="9" x2="16" y2="9" /><line x1="8" y1="12" x2="13" y2="12" /></>,
     menu: <><path d="M6 3v7a2 2 0 0 0 4 0V3" /><line x1="8" y1="10" x2="8" y2="21" /><path d="M16 3c-1.5 0-2.5 2-2.5 5s1 4 2.5 4v9" /></>,
     reports: <><path d="M4 4v16h16" /><rect x="7" y="11" width="3" height="6" /><rect x="12" y="7" width="3" height="10" /><rect x="17" y="13" width="3" height="4" /></>,
+    scan: <><path d="M3 8.5V5.5A2.5 2.5 0 0 1 5.5 3h3" /><path d="M15.5 3h3A2.5 2.5 0 0 1 21 5.5v3" /><path d="M21 15.5v3a2.5 2.5 0 0 1-2.5 2.5h-3" /><path d="M8.5 21h-3A2.5 2.5 0 0 1 3 18.5v-3" /><line x1="6" y1="12" x2="18" y2="12" /></>,
     qr: <><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="5.5" y="5.5" width="2" height="2" /><rect x="16.5" y="5.5" width="2" height="2" /><rect x="5.5" y="16.5" width="2" height="2" /><path d="M14 14h3v3h-3zM19 14h2M14 19h2M19 19h2v2" /></>,
     users: <><circle cx="8.5" cy="8" r="3.2" /><path d="M2.5 20a6 6 0 0 1 12 0" /><circle cx="17.5" cy="9.5" r="2.4" /><path d="M15 20a5 5 0 0 1 6.5-4.3" /></>,
     audit: <><path d="M4 4h12l4 4v12H4z" /><path d="M16 4v4h4" /><line x1="8" y1="12" x2="16" y2="12" /><line x1="8" y1="16" x2="13" y2="16" /></>,

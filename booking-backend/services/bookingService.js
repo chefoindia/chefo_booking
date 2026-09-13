@@ -28,6 +28,7 @@ const BookingRequest = require("../models/BookingRequest");
 
 const { cutoffState, isDateKey, todayKey, shiftDateKey } = require("../utils/time");
 const { normalisePhone } = require("../utils/phone");
+const { newTicket } = require("../utils/ticket");
 const { record } = require("./audit");
 
 /** A refusal the routes can turn straight into an HTTP response. */
@@ -207,6 +208,155 @@ const partySnapshotOf = (p) => ({
 });
 
 /* ------------------------------------------------------------------ */
+/* Custom questions                                                     */
+/* ------------------------------------------------------------------ */
+// The business's own questions (Business.bookingFields) are configuration, so
+// the answers to them are validated HERE rather than in the route — same reason
+// the cutoff lives in this file. A customer form and an operator's counter entry
+// must accept and reject exactly the same answers, and the moment two layers
+// both decide "is this a valid department?" they will eventually disagree.
+//
+// The output is a SNAPSHOT: label and type are copied alongside the value, so a
+// question renamed, rescoped or deleted next month cannot rewrite what this
+// booking recorded.
+const ANSWER_MAX = 300;
+
+/** Does this question apply to the meal service and party type being booked? */
+function fieldApplies(field, mealTypeKey, partyTypeKey) {
+    // Empty list means "everywhere" — the common case, and deliberately the
+    // default, so a business that never scopes anything never thinks about it.
+    if (field.mealTypeKeys?.length && !field.mealTypeKeys.includes(mealTypeKey)) return false;
+    if (field.partyTypeKeys?.length && !field.partyTypeKeys.includes(partyTypeKey)) return false;
+    return true;
+}
+
+/**
+ * One raw submitted value -> the string that gets stored, or "" for "not
+ * answered". Throws when the value is present but wrong for its type.
+ *
+ * Everything ends up a string because that is what the snapshot holds; the type
+ * is what decides whether the string was allowed to be what it is.
+ */
+function coerceAnswer(field, raw) {
+    const label = field.label || field.key;
+    const type = field.type || "text";
+
+    // A checkbox has no "not answered" state — absent IS the answer "no".
+    if (type === "checkbox") {
+        const ticked = raw === true || raw === 1 || raw === "1"
+            || raw === "true" || raw === "yes" || raw === "on";
+        return ticked ? "yes" : "no";
+    }
+
+    if (raw === null || raw === undefined) return "";
+    const v = String(raw).trim();
+    if (!v) return "";
+
+    switch (type) {
+        case "number": {
+            const n = Number(v);
+            if (!Number.isFinite(n)) fail(`"${label}" must be a number.`, { code: "BAD_ANSWER" });
+            return String(n);
+        }
+        case "tel": {
+            // Through the same normaliser as the party's phone, so a number
+            // captured in a custom field is stored in the one format this
+            // product reads phone numbers in.
+            const p = normalisePhone(v);
+            if (!p) fail(`Enter a valid mobile number for "${label}".`, { code: "BAD_ANSWER" });
+            return p;
+        }
+        case "email": {
+            if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v)) {
+                fail(`Enter a valid email address for "${label}".`, { code: "BAD_ANSWER" });
+            }
+            return v.slice(0, ANSWER_MAX);
+        }
+        case "date": {
+            if (!isDateKey(v)) fail(`"${label}" must be a date.`, { code: "BAD_ANSWER" });
+            return v;
+        }
+        case "select": {
+            // The value has to be one the operator actually offered. Without
+            // this, "select" is a text box with a dropdown drawn on it.
+            if (!(field.options || []).includes(v)) {
+                fail(`Choose one of the listed options for "${label}".`, { code: "BAD_ANSWER" });
+            }
+            return v;
+        }
+        default:
+            // text / textarea and anything a future config version invents.
+            return v.slice(0, ANSWER_MAX);
+    }
+}
+
+/**
+ * Validate the submitted `{ [fieldKey]: value }` against this business's
+ * configured questions and return the snapshot array to store.
+ *
+ * Unknown and out-of-scope keys are REFUSED rather than ignored: silently
+ * dropping an answer the customer typed is how a booking arrives at the counter
+ * missing the room number somebody swears they entered.
+ */
+function buildAnswers({ business, mealType, party, answers, enforceRequired = true }) {
+    const all = business.bookingFields || [];
+    const supplied = (answers && typeof answers === "object" && !Array.isArray(answers)) ? answers : {};
+
+    const mealTypeKey = mealType?.key || "";
+    const partyTypeKey = party?.partyType || "";
+
+    // Inactive fields are not askable and not answerable — a retired question
+    // must not come back because a stale form still posts its key.
+    const active = all.filter((f) => f.active !== false);
+    const inScope = active.filter((f) => fieldApplies(f, mealTypeKey, partyTypeKey));
+    const byKey = new Map(inScope.map((f) => [String(f.key), f]));
+
+    for (const key of Object.keys(supplied)) {
+        if (byKey.has(key)) continue;
+        const known = all.find((f) => String(f.key) === key);
+        fail(
+            known
+                ? `"${known.label || key}" isn't asked for this booking.`
+                : `"${key}" isn't a question on this booking form.`,
+            { code: "BAD_ANSWERS" }
+        );
+    }
+
+    const out = [];
+    for (const f of [...inScope].sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0))) {
+        const type = f.type || "text";
+        const value = coerceAnswer(f, Object.prototype.hasOwnProperty.call(supplied, f.key) ? supplied[f.key] : undefined);
+        const answered = type === "checkbox" ? value === "yes" : Boolean(value);
+
+        // REQUIRED IS A RULE FOR THE PUBLIC FORM, NOT FOR THE COUNTER.
+        // The same distinction the rest of this function's caller already
+        // makes (acceptingBookings, customerBookable and the date window are
+        // all checked only for source "customer"): an operator taking a
+        // booking over the counter may genuinely not have the customer's
+        // employee ID, and refusing to record the meal because of it would
+        // lose the booking rather than the answer. Everything else — unknown
+        // keys, out-of-scope keys, bad values — still applies to both.
+        if (enforceRequired && f.required && !answered) {
+            fail(
+                type === "checkbox"
+                    ? `Please tick "${f.label}" to continue.`
+                    : `"${f.label}" is required.`,
+                { code: "ANSWER_REQUIRED" }
+            );
+        }
+
+        // A checkbox is recorded either way, because "no" is a real answer and
+        // an absent row would be indistinguishable from never having asked.
+        // Every other type records only what was actually filled in.
+        if (type !== "checkbox" && !value) continue;
+
+        out.push({ key: f.key, label: f.label, type, value });
+    }
+
+    return out;
+}
+
+/* ------------------------------------------------------------------ */
 /* CREATE                                                               */
 /* ------------------------------------------------------------------ */
 /**
@@ -223,6 +373,9 @@ const partySnapshotOf = (p) => ({
 async function createBooking({
     businessId, mealTypeId, date, quantities, party,
     customerNote = "", location = "", source = "customer",
+    // The business's own questions. Validated against its configuration below,
+    // never trusted as sent.
+    answers = {},
     actor = null, now = new Date(), requestMeta = {},
 }) {
     const { business, mealType, cutoff } = await resolveContext({ businessId, mealTypeId, date, now });
@@ -244,6 +397,12 @@ async function createBooking({
     const partyDoc = await upsertParty({ businessId, ...party });
     const { lines, totalQuantity, totalAmount } = await buildLines({
         businessId, mealTypeId, quantities, rules: business.rules,
+    });
+    // After the party exists, because which questions apply depends on the
+    // party type the booking ended up with — not on whatever the form claimed.
+    const answerSnapshot = buildAnswers({
+        business, mealType, party: partyDoc, answers,
+        enforceRequired: source === "customer",
     });
 
     // THE DECISION.
@@ -272,6 +431,10 @@ async function createBooking({
         createdByUserId: actor?.userId || null,
         customerNote: String(customerNote || "").slice(0, 500),
         location: String(location || partyDoc.location || "").slice(0, 200),
+        answers: answerSnapshot,
+        // Minted here and only here: every booking in the product can be
+        // produced at a counter without the customer proving anything else.
+        ticket: newTicket(),
     });
 
     let request = null;
@@ -308,7 +471,12 @@ async function createBooking({
         bookingId: booking._id,
         requestId: request?._id || null,
         after: { lines, totalQuantity, status: booking.status },
-        details: { reference, date, meal: mealType.name, afterCutoff: cutoff.passed, source },
+        details: {
+            reference, date, meal: mealType.name, afterCutoff: cutoff.passed, source,
+            // What the customer answered, in the trail, because a disputed
+            // "I definitely wrote gate 3" is settled by the log or by nothing.
+            ...(answerSnapshot.length ? { answers: answerSnapshot } : {}),
+        },
     });
 
     return { booking, request, cutoff };
@@ -606,6 +774,8 @@ module.exports = {
     resolveContext,
     upsertParty,
     buildLines,
+    buildAnswers,
+    fieldApplies,
     nextReference,
     assertDateBookable,
 };

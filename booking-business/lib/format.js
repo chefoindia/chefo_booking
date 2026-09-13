@@ -79,3 +79,35 @@ export const REQUEST_TYPE_LABEL = {
     change: "Change request",
     cancellation: "Cancellation request",
 };
+
+// SERVED IS NOT A STATUS. A booking is confirmed or it isn't; separately, the
+// meal was handed over or it wasn't. Folding the second fact into STATUS_LABEL
+// would force impossible answers ("is a cancelled-but-served booking green?"),
+// so consumption gets its own small vocabulary that sits BESIDE the status.
+export const SERVED_LABEL = { served: "Served", unserved: "Not served" };
+
+export const CONSUMED_VIA_LABEL = {
+    scan: "scanned",
+    manual: "marked by hand",
+};
+
+export const isServed = (b) => Boolean(b?.consumedAt);
+
+// Custom-field answers are snapshotted as strings whatever their type, so a
+// ticked checkbox arrives as "true" and would otherwise be shown to an operator
+// as the literal word. Only that type needs translating — everything else is
+// already exactly what the customer typed.
+export const answerText = (a) => {
+    if (!a) return "";
+    if (a.type === "checkbox") return (a.value === true || String(a.value) === "true") ? "Yes" : "No";
+    return String(a.value ?? "");
+};
+
+// The counter question is never "was it served" alone — it is "who gave it out
+// and when", because that is what settles a dispute. One line, both facts.
+export function servedSummary(b) {
+    if (!b?.consumedAt) return "";
+    const who = b.consumedByName ? `by ${b.consumedByName}` : "by someone since removed";
+    const how = CONSUMED_VIA_LABEL[b.consumedVia];
+    return `${who} · ${fmtDateTime(b.consumedAt)}${how ? ` · ${how}` : ""}`;
+}

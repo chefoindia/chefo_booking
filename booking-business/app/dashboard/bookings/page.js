@@ -4,17 +4,24 @@
 // The operator's edits apply directly whatever the clock says. Sending them
 // through the approval queue would mean asking them to approve their own
 // request, which is theatre; after cutoff, their edit IS the decision.
+//
+// Whether a meal was handed over rides alongside the status rather than inside
+// it: a confirmed booking is legitimately served or unserved, and squashing the
+// two axes into one column would make the table lie during a lunch rush.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { get, post, patch } from "@/lib/api";
 import { useAccess } from "../layout";
 import { useToast } from "@/components/ToastProvider";
-import { formatDate, prettyPhone, todayKey, shiftDate, STATUS_LABEL, timeAgo, REQUEST_TYPE_LABEL } from "@/lib/format";
+import {
+    formatDate, prettyPhone, todayKey, shiftDate, STATUS_LABEL, timeAgo,
+    servedSummary, answerText, REQUEST_TYPE_LABEL,
+} from "@/lib/format";
 import Empty from "@/components/Empty";
 import Pagination from "@/components/Pagination";
 import { downloadFromApi } from "@/lib/download";
 import Modal from "@/components/Modal";
-import StatusBadge from "@/components/StatusBadge";
+import StatusBadge, { ServedBadge } from "@/components/StatusBadge";
 import { Field, Input, Select, Textarea } from "@/components/Field";
 
 export default function BookingsPage() {
@@ -30,6 +37,7 @@ export default function BookingsPage() {
         from: shiftDate(todayKey(), -6), to: todayKey(),
         mealTypeId: params.get("mealTypeId") || "",
         status: "",
+        served: "",
         q: "",
     });
     const [page, setPage] = useState(1);
@@ -38,7 +46,10 @@ export default function BookingsPage() {
     const [config, setConfig] = useState({ mealTypes: [], variants: [] });
     const [rows, setRows] = useState([]);
     const [loading, setLoading] = useState(true);
-    const [detail, setDetail] = useState(null);
+    // Initial state, not a subscription. The scanner links straight to a record
+    // with ?booking=<id>; after that the dialog is the operator's to close, and
+    // rewriting the URL under them would fight the back button.
+    const [detail, setDetail] = useState(params.get("booking") || null);
     const [creating, setCreating] = useState(false);
 
     // The booking form and the filters both need the configured meal services
@@ -55,6 +66,7 @@ export default function BookingsPage() {
         else { if (filters.from) qs.set("from", filters.from); if (filters.to) qs.set("to", filters.to); }
         if (filters.mealTypeId) qs.set("mealTypeId", filters.mealTypeId);
         if (filters.status) qs.set("status", filters.status);
+        if (filters.served) qs.set("served", filters.served);
         if (filters.q.trim()) qs.set("q", filters.q.trim());
         return qs;
     }, [filters]);
@@ -145,10 +157,18 @@ export default function BookingsPage() {
                         <option value="">All statuses</option>
                         {Object.entries(STATUS_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                     </Select>
+                    {/* Handover state, deliberately its own control — "who still
+                        hasn't collected" is a different question from "what is
+                        confirmed", and the counter asks both. */}
+                    <Select value={filters.served} onChange={(e) => setF({ served: e.target.value })}>
+                        <option value="">Served or not</option>
+                        <option value="no">Not served</option>
+                        <option value="yes">Served</option>
+                    </Select>
                     <Input placeholder="Search name, mobile, organisation or reference" className="input grow" value={filters.q}
                         onChange={(e) => setF({ q: e.target.value })} />
                     <button className="btn btn-ghost btn-sm"
-                        onClick={() => setF({ mode: "day", date: todayKey(), mealTypeId: "", status: "", q: "" })}>
+                        onClick={() => setF({ mode: "day", date: todayKey(), mealTypeId: "", status: "", served: "", q: "" })}>
                         Clear
                     </button>
                 </div>
@@ -165,7 +185,7 @@ export default function BookingsPage() {
                             <thead>
                                 <tr>
                                     <th>Reference</th><th>Customer</th><th>Meal</th><th>Date</th>
-                                    <th className="num">Meals</th><th>Breakdown</th><th>Status</th><th></th>
+                                    <th className="num">Meals</th><th>Breakdown</th><th>Status</th><th>Served</th><th></th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -194,6 +214,14 @@ export default function BookingsPage() {
                                                     </span>
                                                 )}
                                             </div>
+                                        </td>
+                                        <td>
+                                            <ServedBadge booking={b} />
+                                            {b.consumedAt && (
+                                                <div className="xsmall faint" style={{ marginTop: 3 }}>
+                                                    {servedSummary(b)}
+                                                </div>
+                                            )}
                                         </td>
                                         <td>
                                             <button className="btn btn-ghost btn-sm"
@@ -231,6 +259,7 @@ function BookingDetail({ id, onClose, onChanged, config }) {
     const [editing, setEditing] = useState(false);
     const [qty, setQty] = useState({});
     const [busy, setBusy] = useState(false);
+    const [confirm, setConfirm] = useState(null); // { title, body, label, danger, action }
 
     const load = useCallback(async () => {
         try { setData(await get(`/api/bookings/${id}`)); }
@@ -270,115 +299,234 @@ function BookingDetail({ id, onClose, onChanged, config }) {
     };
 
     const b = data?.booking;
+    const served = Boolean(b?.consumedAt);
+
+    // Marking a meal served is only reversible on paper — the food has left the
+    // counter — so the button opens this box and the box does the posting.
+    const runConsume = async () => {
+        setBusy(true);
+        try {
+            const res = await post(`/api/bookings/${id}/consume`, { via: "manual" });
+            setData((d) => ({ ...d, booking: res.booking }));
+            setConfirm(null);
+            toast("success", "Marked as served", `${b.reference} is recorded as handed over.`);
+            onChanged();
+        } catch (e) {
+            const known = {
+                ALREADY_CONSUMED: ["Already served", "Somebody marked this one first."],
+                NOT_CONSUMABLE: ["This booking doesn't stand", "It was cancelled or rejected, so there is nothing to hand over."],
+                CONSUME_PENDING: ["Still waiting on a decision", "Resolve the open request first, then mark it served."],
+            }[e.code];
+            if (e.status === 403) toast("error", "Not allowed", "Your role can't mark meals as served.");
+            else if (known) toast("error", known[0], known[1]);
+            else toast("error", "Couldn't mark it served", e.message);
+            await load();
+        } finally { setBusy(false); }
+    };
+
+    const runUnconsume = async () => {
+        setBusy(true);
+        try {
+            const res = await post(`/api/bookings/${id}/unconsume`);
+            setData((d) => ({ ...d, booking: res.booking }));
+            setConfirm(null);
+            toast("success", "Served mark removed", "This booking is back to not served.");
+            onChanged();
+        } catch (e) {
+            toast("error", e.status === 403 ? "Not allowed" : "Couldn't undo that", e.message);
+        } finally { setBusy(false); }
+    };
+
+    const askServe = () => setConfirm({
+        title: "Mark this booking as served?",
+        body: `${b.reference} · ${b.partySnapshot?.name} · ${b.totalQuantity} meal${b.totalQuantity === 1 ? "" : "s"}. Your name and the time go on the record.`,
+        label: "Yes, mark as served",
+        action: runConsume,
+    });
+
+    const askUndo = () => setConfirm({
+        title: "Remove the served mark?",
+        body: `${b.reference} goes back to not served and the correction is logged against your name. Only do this if the meal was not actually handed over.`,
+        label: "Yes, undo it",
+        danger: true,
+        action: runUnconsume,
+    });
+
+    const answers = (b?.answers || []).filter((a) => a && String(a.value ?? "").trim() !== "");
+
     const variants = (config.variants || []).filter((v) => v.active
         && (!v.mealTypeIds?.length || v.mealTypeIds.some((m) => String(m) === String(b?.mealTypeId))));
 
     return (
-        <Modal open wide onClose={onClose}
-            title={b ? `${b.reference} · ${b.partySnapshot?.name}` : "Booking"}
-            subtitle={b ? `${b.mealTypeName} · ${formatDate(b.date, { year: true })}` : ""}
-            footer={
-                <>
-                    <button className="btn btn-ghost" onClick={onClose}>Close</button>
-                    {b && data.canEditDirectly && access.can("bookings.cancel") && !editing && (
-                        <button className="btn btn-danger" disabled={busy} onClick={cancel}>Cancel booking</button>
-                    )}
-                    {b && data.canEditDirectly && access.can("bookings.edit") && (
-                        editing
-                            ? <button className="btn btn-primary" disabled={busy} onClick={save}>
-                                {busy ? "Saving…" : "Save changes"}
-                            </button>
-                            : <button className="btn btn-primary" onClick={startEdit}>Edit quantities</button>
-                    )}
-                </>
-            }
-        >
-            {!b ? <div className="sk" style={{ height: 160 }} /> : (
-                <div className="stack">
-                    <div className="row wrap" style={{ gap: 8 }}>
-                        <StatusBadge status={b.status} />
-                        {b.submittedAfterCutoff && <span className="badge badge-amber">Submitted after cutoff</span>}
-                        {b.source === "operator" && <span className="badge badge-blue">Entered at counter</span>}
-                    </div>
+        <>
+            <Modal open wide onClose={onClose}
+                title={b ? `${b.reference} · ${b.partySnapshot?.name}` : "Booking"}
+                subtitle={b ? `${b.mealTypeName} · ${formatDate(b.date, { year: true })}` : ""}
+                footer={
+                    <>
+                        <button className="btn btn-ghost" onClick={onClose}>Close</button>
+                        {/* Hidden where the API would refuse it anyway: a cancelled or
+                            still-pending booking has nothing to hand over. The 403
+                            branch in runConsume covers the gap between this render
+                            and the click. */}
+                        {b && !editing && access.can("bookings.consume") && (served
+                            ? <button className="btn btn-secondary" disabled={busy} onClick={askUndo}>Undo served mark…</button>
+                            : b.status === "confirmed" &&
+                                <button className="btn btn-secondary" disabled={busy} onClick={askServe}>Mark as served…</button>
+                        )}
+                        {b && data.canEditDirectly && access.can("bookings.cancel") && !editing && (
+                            <button className="btn btn-danger" disabled={busy} onClick={cancel}>Cancel booking</button>
+                        )}
+                        {b && data.canEditDirectly && access.can("bookings.edit") && (
+                            editing
+                                ? <button className="btn btn-primary" disabled={busy} onClick={save}>
+                                    {busy ? "Saving…" : "Save changes"}
+                                </button>
+                                : <button className="btn btn-primary" onClick={startEdit}>Edit quantities</button>
+                        )}
+                    </>
+                }
+            >
+                {!b ? <div className="sk" style={{ height: 160 }} /> : (
+                    <div className="stack">
+                        <div className="row wrap" style={{ gap: 8 }}>
+                            <StatusBadge status={b.status} />
+                            <ServedBadge booking={b} />
+                            {b.submittedAfterCutoff && <span className="badge badge-amber">Submitted after cutoff</span>}
+                            {b.source === "operator" && <span className="badge badge-blue">Entered at counter</span>}
+                        </div>
 
-                    <div className="grid-2">
+                        {/* Who handed it over and when — the only two facts that
+                            settle "but I already collected mine". */}
+                        {served && (
+                            <div style={{
+                                padding: "10px 12px", borderRadius: 8,
+                                background: "var(--basil-soft)", border: "1px solid var(--basil)",
+                            }}>
+                                <div className="small" style={{ color: "var(--basil-dark)", fontWeight: 650 }}>
+                                    Served {servedSummary(b)}
+                                </div>
+                                {b.consumedNote && (
+                                    <div className="xsmall" style={{ marginTop: 4, color: "var(--basil-dark)" }}>
+                                        “{b.consumedNote}”
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        <div className="grid-2">
+                            <div>
+                                <div className="num-label">Customer</div>
+                                <div style={{ fontWeight: 650 }}>{b.partySnapshot?.name}</div>
+                                <div className="small mono">{prettyPhone(b.partySnapshot?.phone)}</div>
+                                {b.partySnapshot?.organisation && (
+                                    <div className="small muted">{b.partySnapshot.organisation}</div>
+                                )}
+                            </div>
+                            <div>
+                                <div className="num-label">Total meals</div>
+                                <div className="mid-num">{b.totalQuantity}</div>
+                            </div>
+                        </div>
+
                         <div>
-                            <div className="num-label">Customer</div>
-                            <div style={{ fontWeight: 650 }}>{b.partySnapshot?.name}</div>
-                            <div className="small mono">{prettyPhone(b.partySnapshot?.phone)}</div>
-                            {b.partySnapshot?.organisation && (
-                                <div className="small muted">{b.partySnapshot.organisation}</div>
+                            <div className="num-label" style={{ marginBottom: 6 }}>Breakdown</div>
+                            {editing ? (
+                                <div className="stack-sm">
+                                    {variants.map((v) => (
+                                        <div key={v._id} className="row-between">
+                                            <span className="small">{v.name}</span>
+                                            <Input type="number" min="0" style={{ width: 92 }}
+                                                value={qty[String(v._id)] ?? 0}
+                                                onChange={(e) => setQty((q) => ({
+                                                    ...q, [String(v._id)]: Math.max(0, Number(e.target.value) || 0),
+                                                }))} />
+                                        </div>
+                                    ))}
+                                    <div className="row-between" style={{ paddingTop: 6, borderTop: "1px solid var(--border)" }}>
+                                        <strong className="small">New total</strong>
+                                        <strong>{Object.values(qty).reduce((n, v) => n + (Number(v) || 0), 0)}</strong>
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="variant-grid">
+                                    {b.lines.map((l) => (
+                                        <div key={l.variantId} className="variant-chip">
+                                            <div className="n">{l.quantity}</div>
+                                            <div className="l">{l.variantName}</div>
+                                        </div>
+                                    ))}
+                                </div>
                             )}
                         </div>
-                        <div>
-                            <div className="num-label">Total meals</div>
-                            <div className="mid-num">{b.totalQuantity}</div>
-                        </div>
-                    </div>
 
-                    <div>
-                        <div className="num-label" style={{ marginBottom: 6 }}>Breakdown</div>
-                        {editing ? (
-                            <div className="stack-sm">
-                                {variants.map((v) => (
-                                    <div key={v._id} className="row-between">
-                                        <span className="small">{v.name}</span>
-                                        <Input type="number" min="0" style={{ width: 92 }}
-                                            value={qty[String(v._id)] ?? 0}
-                                            onChange={(e) => setQty((q) => ({
-                                                ...q, [String(v._id)]: Math.max(0, Number(e.target.value) || 0),
-                                            }))} />
-                                    </div>
-                                ))}
-                                <div className="row-between" style={{ paddingTop: 6, borderTop: "1px solid var(--border)" }}>
-                                    <strong className="small">New total</strong>
-                                    <strong>{Object.values(qty).reduce((n, v) => n + (Number(v) || 0), 0)}</strong>
+                        {b.customerNote && (
+                            <div>
+                                <div className="num-label">Customer note</div>
+                                <p className="small">{b.customerNote}</p>
+                            </div>
+                        )}
+
+                        {/* Whatever this business decided to ask for, as it was
+                            answered on the day. A snapshot — editing the field list
+                            later must never rewrite what a customer actually said. */}
+                        {answers.length > 0 && (
+                            <div>
+                                <div className="num-label" style={{ marginBottom: 6 }}>Their answers</div>
+                                <div className="grid-2">
+                                    {answers.map((a) => (
+                                        <div key={a.key} style={{ padding: "7px 10px", background: "var(--paper)", borderRadius: 8 }}>
+                                            <div className="num-label">{a.label}</div>
+                                            <div className="small" style={{ marginTop: 2, overflowWrap: "anywhere" }}>
+                                                {answerText(a)}
+                                            </div>
+                                        </div>
+                                    ))}
                                 </div>
                             </div>
-                        ) : (
-                            <div className="variant-grid">
-                                {b.lines.map((l) => (
-                                    <div key={l.variantId} className="variant-chip">
-                                        <div className="n">{l.quantity}</div>
-                                        <div className="l">{l.variantName}</div>
-                                    </div>
-                                ))}
+                        )}
+
+                        {/* Every request this booking ever carried, kept whole. */}
+                        {data.requests?.length > 0 && (
+                            <div>
+                                <div className="num-label" style={{ marginBottom: 6 }}>Request history</div>
+                                <div className="stack-sm">
+                                    {data.requests.map((r) => (
+                                        <div key={r._id} className="row-between small"
+                                            style={{ padding: "7px 10px", background: "var(--paper)", borderRadius: 8 }}>
+                                            <div>
+                                                <strong>{REQUEST_TYPE_LABEL[r.type]}</strong>
+                                                <span className="muted"> · {r.quantityDelta >= 0 ? "+" : ""}{r.quantityDelta} meals</span>
+                                                {r.resolutionNote && <div className="xsmall faint">{r.resolutionNote}</div>}
+                                            </div>
+                                            <div className="row" style={{ gap: 6 }}>
+                                                <StatusBadge status={r.status} />
+                                                <span className="xsmall faint">{timeAgo(r.createdAt)}</span>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
                             </div>
                         )}
                     </div>
+                )}
+            </Modal>
 
-                    {b.customerNote && (
-                        <div>
-                            <div className="num-label">Customer note</div>
-                            <p className="small">{b.customerNote}</p>
-                        </div>
-                    )}
-
-                    {/* Every request this booking ever carried, kept whole. */}
-                    {data.requests?.length > 0 && (
-                        <div>
-                            <div className="num-label" style={{ marginBottom: 6 }}>Request history</div>
-                            <div className="stack-sm">
-                                {data.requests.map((r) => (
-                                    <div key={r._id} className="row-between small"
-                                        style={{ padding: "7px 10px", background: "var(--paper)", borderRadius: 8 }}>
-                                        <div>
-                                            <strong>{REQUEST_TYPE_LABEL[r.type]}</strong>
-                                            <span className="muted"> · {r.quantityDelta >= 0 ? "+" : ""}{r.quantityDelta} meals</span>
-                                            {r.resolutionNote && <div className="xsmall faint">{r.resolutionNote}</div>}
-                                        </div>
-                                        <div className="row" style={{ gap: 6 }}>
-                                            <StatusBadge status={r.status} />
-                                            <span className="xsmall faint">{timeAgo(r.createdAt)}</span>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                    )}
-                </div>
-            )}
-        </Modal>
+            {/* Rendered after the record dialog so it paints above it. This is the
+                only surface that posts — the footer buttons just open it. */}
+            <Modal open={Boolean(confirm)} onClose={() => !busy && setConfirm(null)} title={confirm?.title || ""}
+                footer={
+                    <>
+                        <button className="btn btn-secondary" disabled={busy} onClick={() => setConfirm(null)}>Go back</button>
+                        <button className={`btn ${confirm?.danger ? "btn-danger" : "btn-primary"}`}
+                            disabled={busy} onClick={confirm?.action}>
+                            {busy ? "Working…" : confirm?.label}
+                        </button>
+                    </>
+                }>
+                <p style={{ marginTop: 0, lineHeight: 1.6 }}>{confirm?.body}</p>
+            </Modal>
+        </>
     );
 }
 

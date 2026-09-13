@@ -17,6 +17,7 @@ const BookingParty = require("../models/BookingParty");
 
 const bookingService = require("../services/bookingService");
 const { confirmedTotals, orderVariants } = require("../services/quantity");
+const { consumeBooking, unconsumeBooking } = require("../services/consumption");
 const { authenticate, requirePermission } = require("../middleware/authenticate");
 const { cutoffState, isDateKey } = require("../utils/time");
 const { normalisePhone } = require("../utils/phone");
@@ -24,6 +25,12 @@ const { notify } = require("../services/notify");
 
 const meta = (req) => ({ ip: req.ip, userAgent: req.headers["user-agent"] || "" });
 const isId = (v) => mongoose.Types.ObjectId.isValid(String(v));
+
+// A ticket is a 22-character base64url string. The shape is checked before the
+// query purely to keep obvious junk out of the index; anything that does not
+// match is answered with the same NO_TICKET 404 as an unknown one, so a scanner
+// pointed at the wrong barcode gets one consistent answer.
+const TICKET_RE = /^[A-Za-z0-9_-]{16,64}$/;
 
 /* ------------------------------------------------------------------ */
 /* LIST                                                                 */
@@ -97,6 +104,65 @@ router.get("/api/bookings",
 /* ------------------------------------------------------------------ */
 /* DETAIL — with full request history                                   */
 /* ------------------------------------------------------------------ */
+/**
+ * The detail payload, built once.
+ *
+ * Two routes reach a booking — by id from the list, and by ticket from the
+ * scanner — and the scanner's screen IS the detail screen. If the two produced
+ * even slightly different shapes the dashboard would need two renderers for one
+ * thing, so both call this.
+ */
+async function detailPayload(businessId, booking) {
+    const [requests, mealType, business, party, audit] = await Promise.all([
+        BookingRequest.find({ bookingId: booking._id }).sort({ createdAt: -1 }).lean(),
+        MealType.findById(booking.mealTypeId).lean(),
+        Business.findById(businessId).select("timezoneOffsetMinutes rules").lean(),
+        BookingParty.findById(booking.partyId).lean(),
+        AuditLog.find({ bookingId: booking._id }).sort({ createdAt: -1 }).limit(50).lean(),
+    ]);
+
+    const c = cutoffState(mealType, booking.date, {
+        offsetMinutes: business?.timezoneOffsetMinutes ?? 330,
+    });
+
+    return {
+        booking,
+        party,
+        requests,
+        audit,
+        cutoff: c,
+        // The operator can always act — after cutoff their edit IS the
+        // decision, so they are never sent through an approval queue to
+        // approve themselves.
+        canEditDirectly: !["cancelled", "rejected"].includes(booking.status),
+    };
+}
+
+/* ------------------------------------------------------------------ */
+/* DETAIL BY TICKET — what the scanner lands on                         */
+/* ------------------------------------------------------------------ */
+// REGISTERED ABOVE /api/bookings/:id DELIBERATELY. Express matches in
+// registration order, and although ":id" is a single segment today, putting
+// this second is one careless path edit away from ":id" swallowing "by-ticket"
+// and answering every scan with "Invalid booking."
+router.get("/api/bookings/by-ticket/:ticket",
+    authenticate, requirePermission("bookings.view"),
+    async (req, res, next) => {
+        try {
+            const ticket = String(req.params.ticket || "");
+            const booking = TICKET_RE.test(ticket)
+                ? await Booking.findOne({ ticket, businessId: req.businessId }).lean()
+                : null;
+            // A ticket from ANOTHER business is a miss here, not a leak: the
+            // query is scoped by req.businessId, so scanning a rival canteen's
+            // QR code reads exactly like scanning a made-up one.
+            if (!booking) {
+                return res.status(404).json({ message: "That ticket doesn't match a booking here.", code: "NO_TICKET" });
+            }
+            res.json(await detailPayload(req.businessId, booking));
+        } catch (err) { next(err); }
+    });
+
 router.get("/api/bookings/:id",
     authenticate, requirePermission("bookings.view"),
     async (req, res, next) => {
@@ -106,29 +172,7 @@ router.get("/api/bookings/:id",
             const booking = await Booking.findOne({ _id: req.params.id, businessId: req.businessId }).lean();
             if (!booking) return res.status(404).json({ message: "Booking not found." });
 
-            const [requests, mealType, business, party, audit] = await Promise.all([
-                BookingRequest.find({ bookingId: booking._id }).sort({ createdAt: -1 }).lean(),
-                MealType.findById(booking.mealTypeId).lean(),
-                Business.findById(req.businessId).select("timezoneOffsetMinutes rules").lean(),
-                BookingParty.findById(booking.partyId).lean(),
-                AuditLog.find({ bookingId: booking._id }).sort({ createdAt: -1 }).limit(50).lean(),
-            ]);
-
-            const c = cutoffState(mealType, booking.date, {
-                offsetMinutes: business?.timezoneOffsetMinutes ?? 330,
-            });
-
-            res.json({
-                booking,
-                party,
-                requests,
-                audit,
-                cutoff: c,
-                // The operator can always act — after cutoff their edit IS the
-                // decision, so they are never sent through an approval queue to
-                // approve themselves.
-                canEditDirectly: !["cancelled", "rejected"].includes(booking.status),
-            });
+            res.json(await detailPayload(req.businessId, booking));
         } catch (err) { next(err); }
     });
 
@@ -141,12 +185,15 @@ router.post("/api/bookings",
     authenticate, requirePermission("bookings.create"),
     async (req, res, next) => {
         try {
-            const { mealTypeId, date, quantities, party, customerNote, location } = req.body || {};
+            const { mealTypeId, date, quantities, party, customerNote, location, answers } = req.body || {};
             const { booking, cutoff } = await bookingService.createBooking({
                 businessId: req.businessId,
                 mealTypeId, date, quantities,
                 party: party || {},
-                customerNote, location,
+                customerNote,
+                // The counter records the same business-defined answers the public
+                // form collects; only the REQUIRED rule is relaxed for operators.
+                answers, location,
                 source: "operator",
                 actor: req.actor,
                 requestMeta: meta(req),
@@ -198,6 +245,46 @@ router.post("/api/bookings/:id/cancel",
                     { label: "Meals removed", value: String(booking.totalQuantity) },
                     { label: "Reason", value: String(req.body?.reason || "—") },
                 ],
+            });
+            res.json({ booking });
+        } catch (err) { next(err); }
+    });
+
+/* ------------------------------------------------------------------ */
+/* SERVED / NOT SERVED                                                  */
+/* ------------------------------------------------------------------ */
+// Thin on purpose. Every rule about which bookings may be served, and what a
+// second scan of the same ticket means, lives in services/consumption.js so the
+// scanner and the manual button can never diverge. These two handlers only
+// carry the request in and the booking back out.
+router.post("/api/bookings/:id/consume",
+    authenticate, requirePermission("bookings.consume"),
+    async (req, res, next) => {
+        try {
+            if (!isId(req.params.id)) return res.status(400).json({ message: "Invalid booking." });
+            const { booking } = await consumeBooking({
+                businessId: req.businessId,
+                bookingId: req.params.id,
+                via: req.body?.via,
+                note: req.body?.note,
+                actor: req.actor,
+                requestMeta: meta(req),
+            });
+            res.json({ booking });
+        } catch (err) { next(err); }
+    });
+
+router.post("/api/bookings/:id/unconsume",
+    authenticate, requirePermission("bookings.consume"),
+    async (req, res, next) => {
+        try {
+            if (!isId(req.params.id)) return res.status(400).json({ message: "Invalid booking." });
+            const { booking } = await unconsumeBooking({
+                businessId: req.businessId,
+                bookingId: req.params.id,
+                note: req.body?.note,
+                actor: req.actor,
+                requestMeta: meta(req),
             });
             res.json({ booking });
         } catch (err) { next(err); }

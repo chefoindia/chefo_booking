@@ -61,7 +61,11 @@ app.use("/api/auth/verify-reset-code", resetLimiter);
 app.use("/api/auth/reset-password", resetLimiter);
 
 // ---- customer surface (no auth) ----
+// customerAccount is part of the same separable layer: it adds a verified,
+// year-long customer session on top of the anonymous booking form, and shares
+// the /api/public/* prefix so the whole surface still lifts out in one piece.
 app.use(require("./routes/public"));
+app.use(require("./routes/customerAccount"));
 
 // ---- operator surface (authenticated + permission-gated inside) ----
 app.use(require("./routes/auth"));

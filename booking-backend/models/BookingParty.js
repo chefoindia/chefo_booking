@@ -39,6 +39,25 @@ const bookingPartySchema = new mongoose.Schema(
         // Operator-only. The customer never sees this.
         internalNote: { type: String, default: "" },
 
+        /* ---- THE PART THAT IS ACTUALLY VERIFIED ----------------------------
+           Everything above is recognition. These three fields are the narrow
+           exception: once a party completes phone OTP, this record stops being
+           a guess about who booked and becomes a claim the customer proved.
+
+           It stays OPTIONAL. A party with phoneVerifiedAt null is exactly the
+           V1 party described above and books the same way — verifying only buys
+           the customer a signed-in view of their own history, so the thirty
+           second booking form never grows a login wall. */
+        phoneVerifiedAt: { type: Date, default: null },
+        // When they first kept a session, as distinct from when they first
+        // proved the number. Separate because a party can verify once for a
+        // single booking and never take an account.
+        accountCreatedAt: { type: Date, default: null },
+        // Bumped to invalidate every session already issued to this party —
+        // the logout-everywhere / lost-phone lever. A token whose `v` no longer
+        // matches is refused, so revocation needs no session store.
+        tokenVersion: { type: Number, default: 0 },
+
         // Denormalised for the parties list, which otherwise needs an
         // aggregation over every booking just to sort by "most recent".
         lastBookingAt: { type: Date, default: null },

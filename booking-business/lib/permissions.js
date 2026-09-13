@@ -22,6 +22,9 @@ export const NAV = [
     { key: "dashboard", label: "Today", href: "/dashboard", exact: true, icon: "overview", perms: ["dashboard.view"], section: "Operate" },
     { key: "requests", label: "Approvals", href: "/dashboard/requests", icon: "requests", perms: ["requests.view"], section: "Operate" },
     { key: "bookings", label: "Bookings", href: "/dashboard/bookings", icon: "bookings", perms: ["bookings.view"], section: "Operate" },
+    // Only bookings.view to OPEN it — looking a booking up is reading. Marking
+    // one served needs bookings.consume, and that gate lives on the button.
+    { key: "scan", label: "Scan", href: "/dashboard/scan", icon: "scan", perms: ["bookings.view"], section: "Operate" },
     { key: "parties", label: "Customers", href: "/dashboard/parties", icon: "customers", perms: ["parties.view"], section: "Operate" },
     { key: "menu", label: "Weekly menu", href: "/dashboard/menu", icon: "menu", perms: ["menu.view"], section: "Kitchen" },
     { key: "reports", label: "Reports", href: "/dashboard/reports", icon: "reports", perms: ["reports.view"], section: "Kitchen" },

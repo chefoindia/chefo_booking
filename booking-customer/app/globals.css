@@ -23,6 +23,12 @@
   --brick: #ae3b32;
   --brick-soft: #f9ecea;
 
+  --app-max-w: 520px;
+  --topbar-h: 58px;
+  --tabbar-h: 58px;
+  --safe-t: env(safe-area-inset-top, 0px);
+  --safe-b: env(safe-area-inset-bottom, 0px);
+
   --radius: 12px;
   --radius-sm: 10px;
   --shadow: 0 1px 2px rgba(28, 37, 32, 0.05);
@@ -191,6 +197,113 @@ input, select, textarea { font-family: inherit; }
 
 .powered { text-align: center; font-size: 12px; color: var(--faint); margin-top: 22px; }
 .powered strong { color: var(--slate); font-family: var(--font-display), sans-serif; }
+
+
+/* ---------------------------------------------------------------- app shell
+ * Four tabs in a fixed bar, a canteen name that never scrolls away, and one
+ * column of content between them. On a phone it fills the screen; on a desktop
+ * it stays phone-width and centred, because that is the shape it was designed
+ * for and stretching it to 1400px helps nobody.
+ *
+ * Everything is inset for the notch and the home indicator via the safe-area
+ * variables — a Book button hidden behind an iPhone's home bar is a button
+ * that does not exist. */
+.app-shell {
+  max-width: var(--app-max-w); margin: 0 auto; min-height: 100dvh;
+  background: var(--paper); position: relative;
+  display: flex; flex-direction: column;
+}
+.app-topbar {
+  position: sticky; top: 0; z-index: 40;
+  min-height: calc(var(--topbar-h) + var(--safe-t));
+  padding: var(--safe-t) 16px 0;
+  background: var(--card); border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 11px;
+}
+.app-topbar-mark {
+  width: 34px; height: 34px; border-radius: 10px; flex-shrink: 0; overflow: hidden;
+  background: var(--basil-soft); color: var(--basil-dark);
+  display: grid; place-items: center;
+  font-family: var(--font-display), sans-serif; font-weight: 700; font-size: 15px;
+}
+.app-topbar-mark img { width: 100%; height: 100%; object-fit: cover; }
+.app-topbar-title {
+  font-family: var(--font-display), sans-serif; font-weight: 700; font-size: 16.5px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.app-topbar-sub {
+  font-size: 11.5px; color: var(--faint);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.app-content { flex: 1; padding: 14px 16px calc(var(--tabbar-h) + var(--safe-b) + 26px); }
+
+.tabbar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
+  max-width: var(--app-max-w); margin: 0 auto;
+  height: calc(var(--tabbar-h) + var(--safe-b)); padding-bottom: var(--safe-b);
+  background: var(--card); border-top: 1px solid var(--border);
+  display: flex; box-shadow: 0 -2px 10px rgba(28, 37, 32, 0.05);
+}
+.tab-item {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 3px; background: none; border: none; cursor: pointer; text-decoration: none;
+  color: var(--faint); padding: 6px 2px 0;
+}
+.tab-item .tab-label { font-size: 10.5px; font-weight: 600; }
+.tab-item.active { color: var(--basil); }
+
+@media (min-width: 540px) {
+  body { display: flex; justify-content: center; background: #eef1ee; }
+  .app-shell { box-shadow: 0 0 0 1px var(--border), 0 20px 60px rgba(28, 37, 32, 0.08); }
+}
+
+/* ---------------------------------------------------------------- sections
+ * A tab holds several unrelated things, so each gets a plain heading rather
+ * than a card border — headings scan, nested boxes do not. */
+.sec-h {
+  font-size: 12.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--faint); margin: 18px 2px 9px;
+}
+.sec-h:first-child { margin-top: 2px; }
+
+/* A whole card that is one tap — used for a meal, a booking, a day. */
+.card-tap {
+  display: block; width: 100%; text-align: left; font: inherit; color: inherit;
+  cursor: pointer; text-decoration: none;
+}
+.card-tap:active { transform: scale(0.995); }
+
+/* The cut-off line. Said on its own row, in its own colour, because it is the
+   one fact that decides whether a booking works or becomes a request. */
+.cut-line {
+  display: flex; align-items: flex-start; gap: 7px;
+  font-size: 12.5px; line-height: 1.45; margin-top: 7px;
+}
+.cut-dot { width: 7px; height: 7px; border-radius: 999px; flex-shrink: 0; margin-top: 5px; }
+.cut-green .cut-dot { background: var(--basil); }
+.cut-green { color: var(--basil-dark); }
+.cut-amber .cut-dot { background: var(--turmeric); }
+.cut-amber { color: var(--turmeric); }
+.cut-red   .cut-dot { background: var(--brick); }
+.cut-red   { color: var(--brick); }
+.cut-gray  .cut-dot { background: var(--faint); }
+.cut-gray  { color: var(--faint); }
+
+.chip-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.chip {
+  border: 1.5px solid var(--border); background: var(--card); border-radius: 999px;
+  padding: 8px 14px; font: inherit; font-size: 13.5px; font-weight: 600;
+  color: var(--slate); cursor: pointer;
+}
+.chip.on { border-color: var(--basil); background: var(--basil-soft); color: var(--basil-dark); }
+.chip:disabled { opacity: .45; cursor: not-allowed; }
+
+.dishes { margin: 4px 0 0; padding-left: 16px; font-size: 13px; color: var(--slate); line-height: 1.55; }
+.price-tag {
+  font-size: 12px; font-weight: 600; color: var(--basil-dark);
+  background: var(--basil-soft); border-radius: 999px; padding: 2px 8px;
+}
+.btn-lg { padding: 15px 18px; font-size: 16px; }
 
 @media (prefers-reduced-motion: reduce) {
   .sk::after { animation: none; }

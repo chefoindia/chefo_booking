@@ -8,8 +8,20 @@ const DEFAULT_COUNTRY = process.env.DEFAULT_COUNTRY_CODE || "91";
 
 function normalisePhone(raw) {
     if (raw === null || raw === undefined) return null;
-    const digits = String(raw).replace(/\D/g, "");
+    const trimmed = String(raw).trim();
+    const digits = trimmed.replace(/\D/g, "");
     if (!digits) return null;
+
+    // AN EXPLICIT "+" MEANS THE CALLER ALREADY KNOWS THE COUNTRY, so the
+    // national rules below must not touch it. This matters because the number
+    // Firebase hands back after an OTP is always E.164, and several country
+    // codes produce a total of exactly ten digits (+65 Singapore, +64 NZ).
+    // Feeding one of those through the ten-digit rule below turned
+    // "+6591234567" into "+916591234567" — a DIFFERENT, real Indian number,
+    // which is how a verified foreign login could land on a stranger's party.
+    if (trimmed.startsWith("+")) {
+        return digits.length >= 8 && digits.length <= 15 ? `+${digits}` : null;
+    }
 
     // Already carries the country code.
     if (digits.length === 12 && digits.startsWith(DEFAULT_COUNTRY)) return `+${digits}`;

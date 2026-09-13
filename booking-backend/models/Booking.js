@@ -33,6 +33,23 @@ const lineSchema = new mongoose.Schema(
     { _id: false }
 );
 
+// One answer to one custom question the business asked on its booking form.
+// A SNAPSHOT for exactly the reason a line is: the operator may rename
+// "Department" to "Cost centre" next month, or delete the question entirely,
+// and this booking must still read the way it was answered. The key is kept
+// alongside the label so a report can still group by question after a rename,
+// and the value is a string because "what the customer typed" is a string —
+// typing it per field would mean the schema changes every time a question does.
+const answerSchema = new mongoose.Schema(
+    {
+        key: { type: String, required: true },
+        label: { type: String, required: true },
+        type: { type: String, default: "text" },
+        value: { type: String, default: "" },
+    },
+    { _id: false }
+);
+
 const bookingSchema = new mongoose.Schema(
     {
         businessId: { type: mongoose.Schema.Types.ObjectId, ref: "Business", required: true, index: true },
@@ -89,6 +106,40 @@ const bookingSchema = new mongoose.Schema(
         customerNote: { type: String, default: "" },
         location: { type: String, default: "" },
 
+        // The business's own questions, as answered when this was submitted.
+        // Validated against Business.bookingFields at write time and then
+        // frozen here — see answerSchema above.
+        answers: { type: [answerSchema], default: [] },
+
+        // THE PASS. A 22-char base64url random string minted at create, and the
+        // only thing a customer needs to show to pull up this booking: 128 bits
+        // of randomness is not guessable, where the human-facing BK-1041
+        // reference is sequential and therefore is. Possession of the ticket is
+        // the proof — which is precisely why the reference alone never is, and
+        // why the ticket must not be printed anywhere the booking's owner
+        // wouldn't want it read.
+        //
+        // NO `default: null` on purpose. The index below is unique+sparse, and
+        // sparse skips documents where the field is ABSENT — an explicit null
+        // is an indexed value, so defaulting to null would make the second
+        // ticketless booking ever written collide with the first.
+        ticket: { type: String },
+
+        /* ---- CONSUMPTION ---------------------------------------------------
+           "The meal was actually collected." NOT a status: a consumed booking
+           is still a confirmed booking, still counts toward what the kitchen
+           cooked, and the day's total must not drop by one the moment someone
+           picks up their plate. Adding "consumed" to BOOKING_STATUS would do
+           exactly that, which is why these are their own fields. */
+        consumedAt: { type: Date, default: null },
+        consumedByUserId: { type: mongoose.Schema.Types.ObjectId, ref: "BusinessUser", default: null },
+        // Snapshot of the operator's name, so the record still reads correctly
+        // after that team member leaves and their user row is deactivated.
+        consumedByName: { type: String, default: "" },
+        // How it was marked: a QR scan at the counter, or typed by hand.
+        consumedVia: { type: String, enum: ["scan", "manual", null], default: null },
+        consumedNote: { type: String, default: "" },
+
         // Set when status leaves "confirmed" for good, so the operator can see
         // when a booking dropped out of the count.
         cancelledAt: { type: Date, default: null },
@@ -108,6 +159,10 @@ const bookingSchema = new mongoose.Schema(
 bookingSchema.index({ businessId: 1, date: 1, mealTypeId: 1, status: 1 });
 bookingSchema.index({ businessId: 1, reference: 1 }, { unique: true });
 bookingSchema.index({ businessId: 1, createdAt: -1 });
+// Globally unique, not per-business: the ticket is looked up WITHOUT a business
+// in hand (GET /api/public/t/:ticket), so it has to identify one booking on its
+// own. Sparse so the pre-ticket bookings, which all have none, don't collide.
+bookingSchema.index({ ticket: 1 }, { unique: true, sparse: true });
 
 module.exports = mongoose.model("Booking", bookingSchema);
 module.exports.BOOKING_STATUS = BOOKING_STATUS;

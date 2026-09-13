@@ -5,13 +5,23 @@
 // it carries one hit-box per element, so you click to select, drag to move,
 // pull the corner handle to resize, and edit the selected element's text,
 // font, colour and alignment in the panel. Arrow keys nudge, Delete hides,
-// Ctrl+Z / Ctrl+Y undo and redo. Themes recolour everything at once. The
-// design is saved to the business (so it survives a new browser) and the
-// download is the same painter at full 1080 × 1920.
+// Ctrl+Z / Ctrl+Y undo and redo. The design is saved to the business (so it
+// survives a new browser) and the download is the same painter at full size.
+//
+// TWO CHOICES, NOT ONE. The template row picks a layout — a different sheet
+// size, a different set of elements; the swatches below it pick a palette.
+// Recolouring is safe and instant, so it just happens. Switching template
+// cannot be: it throws away every position, size and word the owner has
+// touched, so it goes through the confirm Drawer like any other destructive
+// act, lands as one undo step, and drops the current selection — a selected id
+// from the old layout would point the drag overlay at an element that no
+// longer exists. The previews are painted by the real renderer rather than
+// drawn as icons, so what the owner is choosing between is the actual thing.
 //
 // Deliberately NOT Canva: no free-form uploads or arbitrary layers. A poster
 // that always contains a scannable code, the shop name and a call to action
-// is the point; the freedom is in how those look and where they sit.
+// is the point; the freedom is in which layout, how those look and where they
+// sit.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { put } from "@/lib/api";
 import { useAccess } from "../layout";
@@ -19,13 +29,18 @@ import { useToast } from "@/components/ToastProvider";
 import { Field, Input, Select, Check } from "@/components/Field";
 import Drawer from "@/components/Drawer";
 import { saveBlob } from "@/lib/download";
-import { POSTER_W, POSTER_H, THEMES, FONTS, defaultPoster, normalizePoster, applyTheme, drawPoster, renderPng, renderQrOnly } from "@/lib/poster";
+import { TEMPLATES, THEMES, FONTS, defaultPoster, normalizePoster, applyTheme, posterSize, drawPoster, renderPng, renderQrOnly } from "@/lib/poster";
 
+// Names for the classic ids, which predate elements carrying their own label.
+// Anything a newer template introduces names itself: LABEL[id] ?? el.label.
 const LABEL = {
     brand: "Small header", title: "Big word 1", title2: "Big word 2", qr: "QR code", caption: "Call to action",
     shop: "Shop name", address: "Address", contact: "Contact", cloudL: "Cloud (left)", cloudR: "Cloud (right)", leafL: "Leaves (left)", leafR: "Leaves (right)",
 };
+const nameOf = (id, el) => LABEL[id] ?? el?.label ?? id;
 const COLOR_CHOICES = [["ink", "Text colour"], ["accent", "Accent"], ["#FFFFFF", "White"], ["#000000", "Black"]];
+const RECT_SHAPES = ["band", "card"];
+const LINE_SHAPES = ["divider", "dots"];
 
 export default function QrPage() {
     const access = useAccess();
@@ -41,6 +56,8 @@ export default function QrPage() {
     const [dirty, setDirty] = useState(false);
     const [busy, setBusy] = useState(false);
     const [confirm, setConfirm] = useState(null);
+    const tpl = TEMPLATES[poster.template] || TEMPLATES.classic;
+    const { w: PW, h: PH } = posterSize(poster);   // the sheet this template prints on
     const history = useRef({ past: [], future: [] });
     const canvasRef = useRef(null);
     const wrapRef = useRef(null);
@@ -77,22 +94,23 @@ export default function QrPage() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    // Fit the preview to the available height.
+    // Fit the preview to the available height — and re-fit when the template
+    // changes, because a landscape board and a tall poster want different scales.
     useEffect(() => {
         const fit = () => {
             const h = Math.max(420, Math.min(window.innerHeight - 200, 760));
-            setScale(Math.min(h / POSTER_H, (Math.min(window.innerWidth - 60, 520)) / POSTER_W));
+            setScale(Math.min(h / PH, (Math.min(window.innerWidth - 60, 520)) / PW));
         };
         fit();
         window.addEventListener("resize", fit);
         return () => window.removeEventListener("resize", fit);
-    }, []);
+    }, [PW, PH]);
 
     const repaint = useCallback(async () => {
         if (!canvasRef.current) return;
-        const b = await drawPoster(canvasRef.current, poster, { scale, url, logoImg: logoRef.current });
+        const b = await drawPoster(canvasRef.current, poster, { scale, url, logoImg: logoRef.current, logoUrl: business.logoUrl });
         setBoxes(b);
-    }, [poster, scale, url]);
+    }, [poster, scale, url, business.logoUrl]);
     useEffect(() => { repaint(); }, [repaint]);
 
     /* ------------------------------------------------ element edits */
@@ -115,7 +133,7 @@ export default function QrPage() {
         e.stopPropagation();
         setSelected(id);
         const start = poster.elements[id];
-        dragRef.current = { id, mode, sx: e.clientX, sy: e.clientY, ox: start.x, oy: start.y, osize: start.size, snapshot: poster };
+        dragRef.current = { id, mode, sx: e.clientX, sy: e.clientY, ox: start.x, oy: start.y, osize: start.size, ow: start.w, oh: start.h, snapshot: poster };
         e.currentTarget.setPointerCapture?.(e.pointerId);
     };
     const onPointerMove = (e) => {
@@ -123,10 +141,17 @@ export default function QrPage() {
         if (!d) return;
         const dx = (e.clientX - d.sx) / scale, dy = (e.clientY - d.sy) / scale;
         if (d.mode === "move") {
-            patch(d.id, { x: Math.round(Math.max(0, Math.min(POSTER_W, d.ox + dx))), y: Math.round(Math.max(0, Math.min(POSTER_H, d.oy + dy))) }, { record: false });
+            patch(d.id, { x: Math.round(Math.max(0, Math.min(PW, d.ox + dx))), y: Math.round(Math.max(0, Math.min(PH, d.oy + dy))) }, { record: false });
+        } else if (d.ow != null && d.oh != null) {
+            // Rectangles (bands, cards, the logo box) stretch on both axes.
+            patch(d.id, { w: Math.round(Math.max(20, Math.min(PW, d.ow + dx))), h: Math.round(Math.max(20, Math.min(PH, d.oh + dy))) }, { record: false });
+        } else if (d.ow != null && d.osize == null) {
+            // Rules and tear lines have a length and nothing else. (Text has a
+            // `w` too, but it also has a size — so it falls through to type size.)
+            patch(d.id, { w: Math.round(Math.max(20, Math.min(PW, d.ow + dx))) }, { record: false });
         } else {
             const grow = Math.max(dx, dy);
-            patch(d.id, { size: Math.round(Math.max(12, Math.min(1000, d.osize + grow))) }, { record: false });
+            patch(d.id, { size: Math.round(Math.max(12, Math.min(1400, d.osize + grow))) }, { record: false });
         }
     };
     const onPointerUp = () => {
@@ -161,9 +186,9 @@ export default function QrPage() {
     const download = async () => {
         setBusy(true);
         try {
-            const blob = await renderPng(poster, { url, logoImg: logoRef.current });
-            saveBlob(blob, `${business.slug || "chefo"}-qr-poster.png`);
-            toast("success", "Poster downloaded", "1080 × 1920 PNG — prints well at A4 or A5.");
+            const blob = await renderPng(poster, { url, logoImg: logoRef.current, logoUrl: business.logoUrl });
+            saveBlob(blob, `${business.slug || "chefo"}-qr-${poster.template}.png`);
+            toast("success", "Poster downloaded", `${PW} × ${PH} PNG — the ${tpl.label} layout, at print resolution.`);
         } catch (e) { toast("error", "Couldn't render the poster", e.message); }
         finally { setBusy(false); }
     };
@@ -190,10 +215,20 @@ export default function QrPage() {
         },
     });
     const askReset = () => setConfirm({
-        title: "Start again from the template?",
-        body: "Your positions, text and colours on this page are replaced with the default layout. The saved design is untouched until you save.",
+        title: `Start the ${tpl.label} layout again?`,
+        body: "Your positions, text and colours on this page are replaced with this layout's defaults. The saved design is untouched until you save, and Ctrl+Z puts it back.",
         label: "Reset layout", danger: true,
-        action: () => { setPoster(defaultPoster(business, poster.theme)); setSelected("qr"); setConfirm(null); },
+        action: () => { setPoster(defaultPoster(business, poster.theme, poster.template)); setSelected("qr"); setConfirm(null); },
+    });
+    // Switching layout is not a recolour: every element, position and edited
+    // word belongs to the template it was made in, so the old ones go. One
+    // setPoster call means one undo step, and the selection has to be reset or
+    // the overlay would keep pointing at an element the new layout never had.
+    const askTemplate = (key) => setConfirm({
+        title: `Switch to the ${TEMPLATES[key].label} layout?`,
+        body: `${TEMPLATES[key].hint} Each layout has its own elements and its own sheet size, so the text you have edited and everything you have moved or resized on this page is replaced. Your saved design is untouched until you save, and Ctrl+Z brings this one back.`,
+        label: "Switch layout", danger: true,
+        action: () => { setPoster(defaultPoster(business, poster.theme, key)); setSelected("qr"); setConfirm(null); },
     });
 
     const box = (id) => boxes[id];
@@ -218,18 +253,18 @@ export default function QrPage() {
             <div className="qr-layout">
                 {/* ---- canvas + overlay ---- */}
                 <div className="card qr-stage" ref={wrapRef} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerLeave={onPointerUp}>
-                    <div className="qr-frame" style={{ width: POSTER_W * scale, height: POSTER_H * scale }} onPointerDown={() => setSelected(null)}>
-                        <canvas ref={canvasRef} style={{ width: POSTER_W * scale, height: POSTER_H * scale, display: "block", borderRadius: 10 }} />
+                    <div className="qr-frame" style={{ width: PW * scale, height: PH * scale }} onPointerDown={() => setSelected(null)}>
+                        <canvas ref={canvasRef} style={{ width: PW * scale, height: PH * scale, display: "block", borderRadius: 10 }} />
                         {poster.order.map((id) => {
                             const b = box(id);
                             if (!b || poster.elements[id]?.visible === false) return null;
                             const sel = id === selected;
                             return (
-                                <div key={id} className={`qr-hit ${sel ? "sel" : ""}`} title={LABEL[id] || id}
+                                <div key={id} className={`qr-hit ${sel ? "sel" : ""}`} title={nameOf(id, poster.elements[id])}
                                     style={{ left: b.x * scale, top: b.y * scale, width: b.w * scale, height: b.h * scale, cursor: canEdit ? "move" : "default" }}
                                     onPointerDown={(e) => onPointerDown(e, id, "move")}>
                                     {sel && canEdit && <span className="qr-handle" onPointerDown={(e) => onPointerDown(e, id, "resize")} title="Drag to resize" />}
-                                    {sel && <span className="qr-tag">{LABEL[id] || id}</span>}
+                                    {sel && <span className="qr-tag">{nameOf(id, poster.elements[id])}</span>}
                                 </div>
                             );
                         })}
@@ -238,6 +273,23 @@ export default function QrPage() {
 
                 {/* ---- properties ---- */}
                 <div className="qr-panel">
+                    <div className="card card-pad">
+                        <div className="num-label" style={{ marginBottom: 8 }}>Layout</div>
+                        <div className="qr-tpls">
+                            {Object.values(TEMPLATES).map((t) => (
+                                <button key={t.key} type="button" className={`qr-tpl ${poster.template === t.key ? "on" : ""}`} disabled={!canEdit || busy}
+                                    title={t.hint} onClick={() => poster.template !== t.key && askTemplate(t.key)}>
+                                    <span className="qr-tpl-shot">
+                                        <TemplateShot tplKey={t.key} business={business} theme={poster.theme} url={url} logoUrl={business.logoUrl} />
+                                    </span>
+                                    <span className="qr-tpl-name">{t.label}</span>
+                                    <span className="qr-tpl-dim">{t.w} × {t.h}</span>
+                                </button>
+                            ))}
+                        </div>
+                        <p className="xsmall faint" style={{ marginTop: 8, marginBottom: 0 }}>{tpl.hint} Switching layout starts it fresh — you'll be asked first.</p>
+                    </div>
+
                     <div className="card card-pad">
                         <div className="num-label" style={{ marginBottom: 8 }}>Theme</div>
                         <div className="row wrap" style={{ gap: 8 }}>
@@ -258,7 +310,7 @@ export default function QrPage() {
 
                     <div className="card card-pad">
                         <div className="row-between" style={{ marginBottom: 8 }}>
-                            <div className="num-label">{el ? LABEL[selected] || selected : "Nothing selected"}</div>
+                            <div className="num-label">{el ? nameOf(selected, el) : "Nothing selected"}</div>
                             {el && canEdit && (
                                 <div className="row" style={{ gap: 4 }}>
                                     <button className="btn btn-ghost btn-sm" onClick={() => reorder(selected, 1)} title="Bring forward">▲</button>
@@ -294,13 +346,37 @@ export default function QrPage() {
                                 </div>
                                 <p className="xsmall faint">The code always sits on a white card and keeps a quiet margin, so it scans on any theme. Test it with your phone before printing a batch.</p>
                             </div>
+                        ) : el.type === "image" ? (
+                            <div className="stack-sm">
+                                {business.logoUrl
+                                    ? <div className="banner banner-info small">Shows your business logo. It is referenced, never copied into the design, so changing the logo changes the poster.</div>
+                                    : <div className="banner banner-warn small">Your business has no logo yet, so this prints as a plain block. Add one in Settings, or hide this element.</div>}
+                                <div className="grid grid-2" style={{ gap: 8 }}>
+                                    <Field label={`Width — ${el.w}px`}><input type="range" min="60" max={PW} value={el.w} disabled={!canEdit} onChange={(e) => patch(selected, { w: Number(e.target.value) }, { record: false })} style={{ width: "100%" }} /></Field>
+                                    <Field label={`Height — ${el.h}px`}><input type="range" min="60" max={PH} value={el.h} disabled={!canEdit} onChange={(e) => patch(selected, { h: Number(e.target.value) }, { record: false })} style={{ width: "100%" }} /></Field>
+                                    <Field label={`Corner radius — ${el.radius ?? 0}`} hint="Half the width makes it a circle."><input type="range" min="0" max={Math.round(Math.min(el.w, el.h) / 2)} value={el.radius ?? 0} disabled={!canEdit} onChange={(e) => patch(selected, { radius: Number(e.target.value) }, { record: false })} style={{ width: "100%" }} /></Field>
+                                </div>
+                            </div>
                         ) : (
                             <div className="stack-sm">
                                 <div className="grid grid-2" style={{ gap: 8 }}>
-                                    <Field label={`Size — ${el.size}px`}><input type="range" min="40" max="500" value={el.size} disabled={!canEdit} onChange={(e) => patch(selected, { size: Number(e.target.value) }, { record: false })} style={{ width: "100%" }} /></Field>
+                                    {RECT_SHAPES.includes(el.shape) ? (<>
+                                        <Field label={`Width — ${el.w}px`}><input type="range" min="20" max={PW} value={el.w} disabled={!canEdit} onChange={(e) => patch(selected, { w: Number(e.target.value) }, { record: false })} style={{ width: "100%" }} /></Field>
+                                        <Field label={`Height — ${el.h}px`}><input type="range" min="20" max={PH} value={el.h} disabled={!canEdit} onChange={(e) => patch(selected, { h: Number(e.target.value) }, { record: false })} style={{ width: "100%" }} /></Field>
+                                        {el.shape === "card" && <Field label={`Corner radius — ${el.radius ?? 32}`}><input type="range" min="0" max="120" value={el.radius ?? 32} disabled={!canEdit} onChange={(e) => patch(selected, { radius: Number(e.target.value) }, { record: false })} style={{ width: "100%" }} /></Field>}
+                                    </>) : LINE_SHAPES.includes(el.shape) ? (<>
+                                        <Field label={`Length — ${el.w}px`}><input type="range" min="20" max={PW} value={el.w} disabled={!canEdit} onChange={(e) => patch(selected, { w: Number(e.target.value) }, { record: false })} style={{ width: "100%" }} /></Field>
+                                        {el.shape === "divider"
+                                            ? <Field label={`Thickness — ${el.thickness ?? 4}px`}><input type="range" min="1" max="32" value={el.thickness ?? 4} disabled={!canEdit} onChange={(e) => patch(selected, { thickness: Number(e.target.value) }, { record: false })} style={{ width: "100%" }} /></Field>
+                                            : <><Field label={`Dot size — ${el.dot ?? 8}px`}><input type="range" min="3" max="28" value={el.dot ?? 8} disabled={!canEdit} onChange={(e) => patch(selected, { dot: Number(e.target.value) }, { record: false })} style={{ width: "100%" }} /></Field>
+                                                <Field label={`Dot spacing — ${el.gap ?? 22}px`}><input type="range" min="8" max="80" value={el.gap ?? 22} disabled={!canEdit} onChange={(e) => patch(selected, { gap: Number(e.target.value) }, { record: false })} style={{ width: "100%" }} /></Field></>}
+                                    </>) : (
+                                        <Field label={`Size — ${el.size}px`}><input type="range" min="40" max={el.shape === "circle" ? 1400 : 500} value={el.size} disabled={!canEdit} onChange={(e) => patch(selected, { size: Number(e.target.value) }, { record: false })} style={{ width: "100%" }} /></Field>
+                                    )}
                                     <Field label="Colour"><Select value={COLOR_CHOICES.some(([v]) => v === el.color) ? el.color : "custom"} disabled={!canEdit} onChange={(e) => e.target.value !== "custom" && patch(selected, { color: e.target.value })}>{COLOR_CHOICES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}<option value="custom">Custom…</option></Select></Field>
                                     <Field label="Custom colour"><input type="color" className="input" style={{ padding: 2, height: 38 }} disabled={!canEdit} value={/^#/.test(el.color) ? el.color : "#ffffff"} onChange={(e) => patch(selected, { color: e.target.value }, { record: false })} /></Field>
                                     {el.shape === "leaf" && <Field label="Direction"><Check label="Flip" checked={Boolean(el.flip)} disabled={!canEdit} onChange={(e) => patch(selected, { flip: e.target.checked })} /></Field>}
+                                    {!["leaf", "cloud"].includes(el.shape) && <Field label={`Opacity — ${Math.round((el.alpha ?? 1) * 100)}%`}><input type="range" min="10" max="100" value={Math.round((el.alpha ?? 1) * 100)} disabled={!canEdit} onChange={(e) => patch(selected, { alpha: Number(e.target.value) / 100 }, { record: false })} style={{ width: "100%" }} /></Field>}
                                 </div>
                             </div>
                         )}
@@ -314,7 +390,7 @@ export default function QrPage() {
                                 const e = poster.elements[id];
                                 return (
                                     <button key={id} className={`qr-eitem ${id === selected ? "on" : ""} ${e.visible === false ? "off" : ""}`} onClick={() => setSelected(id)}>
-                                        <span>{LABEL[id] || id}</span>
+                                        <span>{nameOf(id, e)}</span>
                                         {e.visible === false
                                             ? <span className="link-btn" onClick={(ev) => { ev.stopPropagation(); patch(id, { visible: true }); }}>Show</span>
                                             : <span className="xsmall faint">{e.type}</span>}
@@ -331,7 +407,7 @@ export default function QrPage() {
                             <Input readOnly value={url} className="input mono" style={{ fontSize: 12 }} onFocus={(e) => e.target.select()} />
                             <button className="btn btn-secondary btn-sm" onClick={copyLink}>Copy</button>
                         </div>
-                        {canEdit && <button className="btn btn-ghost btn-sm" style={{ marginTop: 10 }} onClick={askReset}>Reset to template…</button>}
+                        {canEdit && <button className="btn btn-ghost btn-sm" style={{ marginTop: 10 }} onClick={askReset}>Reset this layout…</button>}
                     </div>
                 </div>
             </div>
@@ -355,6 +431,16 @@ export default function QrPage() {
               .qr-handle { position: absolute; right: -7px; bottom: -7px; width: 14px; height: 14px; border-radius: 3px; background: var(--basil); border: 2px solid #fff; cursor: nwse-resize; }
               .qr-tag { position: absolute; left: -2px; top: -22px; font-size: 10.5px; font-weight: 700; background: var(--basil); color: #fff; padding: 2px 7px; border-radius: 5px; white-space: nowrap; }
               .qr-panel { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+              .qr-tpls { display: grid; grid-template-columns: repeat(auto-fill, minmax(94px, 1fr)); gap: 8px; }
+              .qr-tpl { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 6px 7px; border: 2px solid var(--border); border-radius: 10px; background: var(--card); cursor: pointer; font: inherit; color: var(--ink); }
+              .qr-tpl:hover:not(:disabled) { border-color: var(--border-strong); }
+              .qr-tpl:disabled { cursor: default; opacity: .6; }
+              .qr-tpl.on { border-color: var(--basil); box-shadow: 0 0 0 3px var(--basil-soft); }
+              .qr-tpl-shot { display: flex; align-items: center; justify-content: center; height: 96px; width: 100%; }
+              .qr-tpl-shot canvas { display: block; border-radius: 3px; box-shadow: 0 1px 4px rgba(0,0,0,.18); }
+              .qr-tpl-name { font-size: 12px; font-weight: 600; line-height: 1.2; text-align: center; }
+              .qr-tpl.on .qr-tpl-name { color: var(--basil-dark); }
+              .qr-tpl-dim { font-size: 10px; color: var(--faint); font-variant-numeric: tabular-nums; }
               .qr-swatch { position: relative; width: 52px; height: 40px; border: 2px solid; border-radius: 9px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 4px; }
               .qr-swatch i { width: 10px; height: 10px; border-radius: 50%; }
               .qr-swatch b { font-family: var(--font-display); font-size: 13px; }
@@ -367,6 +453,28 @@ export default function QrPage() {
             `}</style>
         </div>
     );
+}
+
+/**
+ * A thumbnail of a layout, painted by the same renderer as the poster itself.
+ * A hand-drawn icon would eventually lie about what the template looks like;
+ * this cannot. It paints the layout's own defaults in the CURRENT theme, so
+ * the row answers "which of these, in the colours I've picked?".
+ */
+function TemplateShot({ tplKey, business, theme, url, logoUrl }) {
+    const ref = useRef(null);
+    useEffect(() => {
+        const t = TEMPLATES[tplKey];
+        const canvas = ref.current;
+        if (!t || !canvas) return;
+        const s = Math.min(82 / t.w, 96 / t.h);
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);   // a 82px-wide poster needs the extra pixels
+        canvas.style.width = `${Math.round(t.w * s)}px`;
+        canvas.style.height = `${Math.round(t.h * s)}px`;
+        drawPoster(canvas, defaultPoster(business, theme, tplKey), { scale: s * dpr, url, logoUrl }).catch(() => { /* a thumbnail is never worth an error */ });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [tplKey, theme, url, logoUrl]);
+    return <canvas ref={ref} aria-hidden="true" />;
 }
 
 function ColorField({ label, value, onChange, disabled }) {
