@@ -83,7 +83,7 @@ export default function TodayPage() {
                 </div>
             ) : (
                 <>
-                    <div className="row wrap" style={{ gap: 14, marginBottom: 16 }}>
+                    <div className="tile-row" style={{ marginBottom: 16 }}>
                         <SummaryTile label="Meals to prepare" value={data.totals.confirmedQuantity} strong />
                         <SummaryTile label="Confirmed bookings" value={data.totals.bookings} />
                     </div>
@@ -100,7 +100,9 @@ export default function TodayPage() {
 function SummaryTile({ label, value, strong, tone, href }) {
     const body = (
         <div className="card card-pad" style={{
-            minWidth: 168,
+            // No minWidth: the .tile-row grid sets the track (min 168px), and a
+            // floor here only re-created the ragged widths it exists to fix.
+            height: "100%",
             ...(tone === "amber" ? { background: "var(--turmeric-soft)", borderColor: "#eadcae" } : {}),
         }}>
             <div className="num-label">{label}</div>

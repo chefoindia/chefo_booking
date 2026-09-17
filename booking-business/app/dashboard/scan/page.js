@@ -27,6 +27,11 @@ import Drawer from "@/components/Drawer";
 import Empty from "@/components/Empty";
 import StatusBadge, { ServedBadge } from "@/components/StatusBadge";
 import { Field, Input, Textarea } from "@/components/Field";
+import Spinner from "@/components/Spinner";
+import {
+    unlock as unlockFeedback, scanCaptured, scanFound, scanMiss, servedOk,
+    soundOn, setSoundOn,
+} from "@/lib/scanFeedback";
 
 // html5-qrcode writes the <video> into this element by id, so it has to exist
 // in the DOM before start() is called — it stays mounted and gets covered by an
@@ -106,6 +111,11 @@ export default function ScanPage() {
     const [data, setData] = useState(null);
     const [choices, setChoices] = useState([]);
 
+    // Read from localStorage after mount — the server render cannot know it,
+    // and guessing would flip the icon on hydration.
+    const [sound, setSound] = useState(true);
+    useEffect(() => { setSound(soundOn()); }, []);
+
     const [confirm, setConfirm] = useState(null); // { title, body, label, danger, action }
     const [note, setNote] = useState("");
     const [busy, setBusy] = useState(false);
@@ -158,8 +168,9 @@ export default function ScanPage() {
             const res = await get(`/api/bookings/${id}`);
             setData(res);
             setPhase("found");
+            scanFound();
         } catch (e) {
-            if (e.status === 404) { setPhase("missing"); return; }
+            if (e.status === 404) { setPhase("missing"); scanMiss(); return; }
             setPhase("idle");
             toast("error", e.status === 403 ? "Not allowed" : "Couldn\u2019t open that booking", e.message);
         }
@@ -180,6 +191,7 @@ export default function ScanPage() {
             if (parsed.kind === "ticket") {
                 setData(await get(`/api/bookings/by-ticket/${encodeURIComponent(parsed.value)}`));
                 setPhase("found");
+                scanFound();
                 return;
             }
 
@@ -188,6 +200,7 @@ export default function ScanPage() {
             try {
                 setData(await get(`/api/bookings/by-reference/${encodeURIComponent(parsed.value)}`));
                 setPhase("found");
+                scanFound();
                 return;
             } catch (e) {
                 // Not an exact reference. Fall through to the broader search,
@@ -196,7 +209,7 @@ export default function ScanPage() {
                 if (e.status !== 404) throw e;
             }
 
-            if (!access.can("bookings.view")) { setPhase("missing"); return; }
+            if (!access.can("bookings.view")) { setPhase("missing"); scanMiss(); return; }
             const res = await get(`/api/bookings?q=${encodeURIComponent(parsed.value)}&limit=10`);
             const hits = res.bookings || [];
             // "BK-12" regex-matches BK-123 too. An exact reference wins outright;
@@ -205,11 +218,12 @@ export default function ScanPage() {
             const candidates = exact.length === 1 ? exact : hits;
 
             if (candidates.length === 1) { await openById(candidates[0]._id); return; }
-            if (!candidates.length) { setPhase("missing"); return; }
+            if (!candidates.length) { setPhase("missing"); scanMiss(); return; }
             setChoices(candidates);
             setPhase("many");
+            scanMiss();   // a choice still stops the queue; it is not a clean hit
         } catch (e) {
-            if (e.status === 404 || e.code === "NO_TICKET") { setPhase("missing"); return; }
+            if (e.status === 404 || e.code === "NO_TICKET") { setPhase("missing"); scanMiss(); return; }
             setPhase("idle");
             toast("error", e.status === 403 ? "Not allowed" : "Couldn't look that up", e.message);
         }
@@ -219,6 +233,15 @@ export default function ScanPage() {
         // The success callback fires on every frame the code stays in view.
         if (decodingRef.current) return;
         decodingRef.current = true;
+        // FEEDBACK BEFORE WORK. Stopping the camera and fetching the booking
+        // together take the best part of a second, and until this was here the
+        // screen did not change at all in that window — so an operator scanned
+        // again, and again, believing nothing had happened. The buzz says "got
+        // it, move the phone away"; the phase change puts a spinner up at the
+        // same instant instead of after the teardown.
+        scanCaptured();
+        setLookedUp(String(text).trim());
+        setPhase("looking");
         stopCamera().finally(() => lookup(text));
     }, [stopCamera, lookup]);
 
@@ -228,6 +251,9 @@ export default function ScanPage() {
 
     const startCamera = useCallback(async () => {
         setCamError(null);
+        // Browsers only allow audio to begin inside a user gesture. This press
+        // is one; a decode five minutes later is not.
+        unlockFeedback();
 
         // getUserMedia is simply absent on http:// origins other than localhost.
         // Catching it here turns a silent nothing into an explanation.
@@ -307,7 +333,10 @@ export default function ScanPage() {
     const submitTyped = (e) => {
         e?.preventDefault();
         if (!typed.trim()) return;
+        unlockFeedback();
         decodingRef.current = false;
+        setLookedUp(typed.trim());
+        setPhase("looking");
         stopCamera().finally(() => lookup(typed));
     };
 
@@ -328,6 +357,7 @@ export default function ScanPage() {
             setData((d) => ({ ...d, booking: res.booking }));
             setConfirm(null);
             setNote("");
+            servedOk();
             toast("success", "Marked as served", `${b.reference} · ${b.totalQuantity} meal${b.totalQuantity === 1 ? "" : "s"} handed over.`);
         } catch (e) {
             const known = {
@@ -374,21 +404,30 @@ export default function ScanPage() {
     });
 
     // A found booking, or a list to choose from, owns the screen.
-    const showScanner = phase !== "found" && phase !== "many";
+    const showScanner = phase !== "found" && phase !== "many" && phase !== "looking";
 
     return (
         <div>
             <div className="page-head row-between wrap">
                 <div>
-                    <h1 className="page-title">{showScanner ? "Scan a booking" : "Booking found"}</h1>
+                    {/* Three states, not two. This keyed off `showScanner`,
+                        which was fine while that meant "no result yet" — but the
+                        scanner now also hides while a lookup is in flight, and the
+                        heading read "Booking found" before anything was found. */}
+                    <h1 className="page-title">
+                        {phase === "looking" ? "Looking that up"
+                            : showScanner ? "Scan a booking" : "Booking found"}
+                    </h1>
                     <p className="page-sub">
-                        {showScanner
+                        {phase === "looking"
+                            ? "Checking this business’s bookings — a second at most."
+                            : showScanner
                             ? "Point the camera at the customer\u2019s code, or type their reference."
                             : "Everything the counter needs for this one. Scan the next when you\u2019re done."}
                     </p>
                 </div>
                 {/* The way back to the scanner, once the scanner is hidden. */}
-                {!showScanner && (
+                {!showScanner && phase !== "looking" && (
                     <button className="btn btn-secondary" onClick={scanNext}>Scan another</button>
                 )}
             </div>
@@ -403,7 +442,33 @@ export default function ScanPage() {
                 <div className="card card-pad">
                     <div className="row-between" style={{ marginBottom: 12 }}>
                         <div className="num-label">Camera</div>
-                        {running && <span className="badge badge-green">Live</span>}
+                        <div className="row" style={{ gap: 8 }}>
+                            {running && <span className="badge badge-green">Live</span>}
+                            {/* A dining hall at noon is loud; a small office at
+                                8am is not. The buzz stays either way — it is the
+                                half that works with the phone in a pocket. */}
+                            <button type="button" className="btn btn-ghost btn-sm scan-sound"
+                                aria-pressed={sound}
+                                title={sound ? "Scan sounds on — tap to mute" : "Scan sounds muted — tap to unmute"}
+                                onClick={() => { const next = !sound; setSound(next); setSoundOn(next); if (next) { unlockFeedback(); scanFound(); } }}>
+                                {sound ? (
+                                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                        <path d="M11 5 6 9H3v6h3l5 4z" />
+                                        <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+                                        <path d="M18.5 5.5a9 9 0 0 1 0 13" />
+                                    </svg>
+                                ) : (
+                                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                        <path d="M11 5 6 9H3v6h3l5 4z" />
+                                        <line x1="23" y1="9" x2="17" y2="15" />
+                                        <line x1="17" y1="9" x2="23" y2="15" />
+                                    </svg>
+                                )}
+                                <span className="hide-sm">{sound ? "Sound on" : "Muted"}</span>
+                            </button>
+                        </div>
                     </div>
 
                     <div className="scan-stage">
@@ -470,8 +535,17 @@ export default function ScanPage() {
 
             {/* ---------------------------------------------- result */}
             <div style={{ marginTop: showScanner ? 14 : 0 }}>
+                {/* A grey skeleton block used to sit here. It reads as "something
+                    is broken" rather than "something is happening", which is the
+                    opposite of what a queue needs. */}
                 {phase === "looking" && (
-                    <div className="card card-pad"><div className="sk" style={{ height: 170 }} /></div>
+                    <div className="card card-pad" style={{ textAlign: "center", padding: "36px 20px" }}>
+                        <Spinner large label="Looking up that booking" />
+                        <div style={{ marginTop: 14, fontWeight: 600 }}>Looking up that booking…</div>
+                        <p className="small muted" style={{ margin: "6px 0 0" }}>
+                            {lookedUp ? <span className="mono">{lookedUp}</span> : "One moment"}
+                        </p>
+                    </div>
                 )}
 
                 {phase === "missing" && (

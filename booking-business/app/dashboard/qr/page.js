@@ -94,16 +94,40 @@ export default function QrPage() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    // Fit the preview to the available height — and re-fit when the template
-    // changes, because a landscape board and a tall poster want different scales.
+    // Fit the preview to the space it actually has — and re-fit when the
+    // template changes, because a landscape board and a tall poster want
+    // different scales.
+    //
+    // WIDTH COMES FROM THE CONTAINER, NEVER FROM window.innerWidth. This used
+    // to read `window.innerWidth - 60`, which fed back on itself: on a phone
+    // the poster was drawn slightly too wide, that widened the document, and
+    // `innerWidth` REPORTS THE WIDENED DOCUMENT (413px inside a 375px
+    // viewport) — so the next fit computed an even wider poster and it never
+    // settled back. Measuring the stage's parent cannot loop, because that
+    // element is a grid track sized by the content column, not by the poster.
     useEffect(() => {
         const fit = () => {
+            const stage = wrapRef.current;
+            const box = stage?.parentElement;
+            let avail = 520;
+            if (box) {
+                const pad = parseFloat(getComputedStyle(stage).paddingLeft) || 0;
+                avail = box.clientWidth - pad * 2;
+            }
             const h = Math.max(420, Math.min(window.innerHeight - 200, 760));
-            setScale(Math.min(h / PH, (Math.min(window.innerWidth - 60, 520)) / PW));
+            setScale(Math.min(h / PH, Math.min(Math.max(avail, 200), 520) / PW));
         };
         fit();
         window.addEventListener("resize", fit);
-        return () => window.removeEventListener("resize", fit);
+        // A resize listener misses the cases that matter most here: the sidebar
+        // drawer opening, a phone rotating, and the very first paint before
+        // layout has settled.
+        let ro;
+        if (typeof ResizeObserver !== "undefined" && wrapRef.current?.parentElement) {
+            ro = new ResizeObserver(fit);
+            ro.observe(wrapRef.current.parentElement);
+        }
+        return () => { window.removeEventListener("resize", fit); ro?.disconnect(); };
     }, [PW, PH]);
 
     const repaint = useCallback(async () => {
@@ -421,9 +445,14 @@ export default function QrPage() {
             </Drawer>
 
             <style>{`
-              .qr-layout { display: grid; grid-template-columns: 1fr; gap: 16px; align-items: start; }
+              /* minmax(0,…) not 1fr: a plain 1fr track still grows to fit an
+                 oversized child, which is exactly how the poster used to push
+                 the whole page sideways. */
+              .qr-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
               @media (min-width: 980px) { .qr-layout { grid-template-columns: auto 1fr; } }
-              .qr-stage { padding: 16px; display: flex; justify-content: center; background: var(--paper); user-select: none; touch-action: none; }
+              /* If a poster is ever wider than the fit allows, it scrolls INSIDE
+                 this card. The page itself must never scroll sideways. */
+              .qr-stage { padding: 16px; display: flex; justify-content: center; background: var(--paper); user-select: none; touch-action: none; max-width: 100%; overflow-x: auto; }
               .qr-frame { position: relative; box-shadow: var(--shadow-lg); border-radius: 10px; }
               .qr-hit { position: absolute; border: 1px dashed transparent; border-radius: 4px; }
               .qr-hit:hover { border-color: rgba(32,110,78,.45); }

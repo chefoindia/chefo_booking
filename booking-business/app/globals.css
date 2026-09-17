@@ -217,6 +217,10 @@ table.tbl, .tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
   border: 1px solid var(--border); border-radius: var(--radius-sm);
   padding: 12px 14px; background: var(--card);
 }
+/* Headline tiles ("Meals to prepare", "Confirmed bookings"). A grid, because
+   as flex children sized by their contents they stacked at different widths on
+   a phone — two cards, two ragged right edges. */
+.tile-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 14px; }
 .p-tile .n { font-family: var(--font-display), sans-serif; font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .p-tile .l { font-size: 12px; color: var(--slate); }
 .p-tile.amber { background: var(--turmeric-soft); border-color: #eadcae; }
@@ -493,6 +497,51 @@ table.tbl, .tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
   .hide-sm { display: none !important; }
 }
 @media (min-width: 861px) { .only-sm { display: none !important; } }
+
+/* ---------------------------------------------------------------- phones
+   The shell has been responsive for a while: the sidebar becomes a drawer and
+   the content padding tightens. What was never done is the CONTENT inside it.
+   Everything below was laid out for a desk — rows of content-width controls
+   and cards that simply WRAP on a narrow screen. Wrapping is not the same as
+   fitting: a row of four selects becomes a ragged staircase with dead space
+   beside every line, and two summary cards stack at two different widths. It
+   reads as broken even though nothing overflows.
+
+   So these rules do one thing: stop content-sized boxes sitting in a flex row
+   and start filling the width. */
+@media (max-width: 560px) {
+  /* A title and its action button fought over one row and both lost. */
+  .page-head { flex-direction: column; align-items: stretch; gap: 12px; }
+  .page-head .row { flex-wrap: wrap; }
+
+  /* FILTER BARS. `.filters .input/.select` are pinned to `width:auto` with a
+     140px floor for the desktop layout — exactly what produces the staircase
+     here. Letting them grow instead fills each line evenly, and the search box
+     (.grow) takes a line of its own rather than being squeezed to a stub. */
+  .filters { gap: 8px; }
+  .filters .input, .filters .select { flex: 1 1 140px; width: auto; min-width: 0; }
+  .filters .grow { flex: 1 1 100%; min-width: 0; }
+
+  /* Summary tiles — equal columns instead of whatever their contents measured. */
+  .tile-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+  /* Meal-option chips. Left to flex-wrap, a fourth option dropped onto its own
+     line and sat alone under three. Two even columns never orphan one. */
+  .variant-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .variant-chip { min-width: 0; }
+
+  /* TAP TARGETS. This dashboard is used one-handed at a counter, often in a
+     hurry. Anything below ~40px is a mis-tap, and a mis-tap on this screen
+     marks the wrong meal served. */
+  .btn { min-height: 40px; }
+  .btn-sm { min-height: 38px; padding: 8px 12px; }
+  .input, .select { min-height: 42px; }
+
+  /* A drawer that stops short of the bottom on a phone wastes the only space
+     there is, and its footer buttons end up side by side and tiny. */
+  .drawer { width: 100vw; }
+  .drawer-foot .btn { flex: 1 1 auto; }
+}
 
 /* ---------------------------------------------------------------- auth */
 .auth-card { width: 100%; max-width: 440px; padding: 28px; }
