@@ -15,7 +15,16 @@ const mono = IBM_Plex_Mono({ subsets: ["latin"], weight: ["400", "500", "600"], 
 export const metadata = {
     title: `${BRAND.productName} — Operations`,
     description: "Meal-service bookings, approvals and daily preparation counts.",
-    icons: { icon: "/chefo-mark.png", apple: "/chefo-mark.png" },
+    // Without this link Chrome never treats the site as installable, however
+    // complete app/manifest.js is — the manifest has to be discoverable from
+    // the document.
+    manifest: "/manifest.webmanifest",
+    icons: {
+        icon: "/chefo-mark.png",
+        // iOS ignores the web manifest for the home-screen icon and reads this
+        // instead, so it is declared separately rather than left to the manifest.
+        apple: "/icons/apple-touch-icon.png",
+    },
 };
 
 export const viewport = {

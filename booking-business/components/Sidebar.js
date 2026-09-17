@@ -12,6 +12,7 @@
 //
 // Below 860px the sidebar is an off-screen drawer opened via the Topbar's
 // hamburger and closed via the close button, the backdrop, or navigating.
+import InstallApp from "@/components/InstallApp";
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
@@ -133,6 +134,9 @@ export default function Sidebar({ access, user, onLogout, open, onClose }) {
             </div>
 
             <div className="sidebar-foot">
+                {/* Renders nothing once the dashboard is already running as an
+                    installed app, so it never offers to install itself. */}
+                <InstallApp className="side-link side-install" label="Get the app" />
                 <div className="side-user">
                     <strong>{user?.name}</strong>
                     {user?.isOwner ? "Owner" : (user?.roleName || "No role yet")}

@@ -447,6 +447,16 @@ table.tbl, .tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
 .side-logout { justify-content: flex-start; color: var(--brick); }
 .side-logout:hover { background: var(--brick-soft); color: var(--brick); }
 
+/* "Get the app" sits in the sidebar footer and borrows .side-link's geometry so
+   it lines up with the nav items, but reads as an action rather than a
+   destination — hence the accent colour and the icon. */
+.side-install {
+  display: flex; align-items: center; gap: 11px; width: 100%;
+  color: var(--basil-dark); font-weight: 600; justify-content: flex-start;
+}
+.side-install:hover { background: var(--basil-soft); }
+.side-install svg { flex: 0 0 18px; }
+
 .main-col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .topbar {
   height: calc(var(--topbar-h) + var(--safe-t));
@@ -490,8 +500,12 @@ table.tbl, .tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
   .sidebar.open { transform: none; }
   .hamburger-btn { display: inline-flex !important; }
   .sidebar-close { display: inline-flex !important; }
-  .topbar { flex-wrap: wrap; height: auto; min-height: var(--topbar-h); padding: 10px 16px; row-gap: 8px; }
-  .topbar-actions { width: 100%; justify-content: flex-end; flex-wrap: wrap; row-gap: 6px; }
+  /* The status control used to be given `width: 100%`, which pushed it onto a
+     line of its own under the business name — a whole extra bar of chrome on
+     the screen with the least room. There is space for both: the name is
+     already allowed to ellipsis, so it yields and the control stays put. */
+  .topbar { height: auto; min-height: var(--topbar-h); padding: 10px 16px; gap: 10px; }
+  .topbar-actions { flex-shrink: 0; gap: 8px; }
   .topbar-status-label { display: none; }
   .content { padding: 14px; }
   .hide-sm { display: none !important; }
@@ -536,6 +550,13 @@ table.tbl, .tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
   .btn { min-height: 40px; }
   .btn-sm { min-height: 38px; padding: 8px 12px; }
   .input, .select { min-height: 42px; }
+
+  /* With the "Bookings" label hidden, the select and the badge print the same
+     word twice, side by side, in the tightest space on the screen. The select
+     already IS the state as well as the control, so the echo goes. Anyone who
+     cannot change the status has no select, and keeps the badge. */
+  .topbar-status-echo { display: none; }
+  .topbar-status { min-width: 104px; }
 
   /* A drawer that stops short of the bottom on a phone wastes the only space
      there is, and its footer buttons end up side by side and tiny. */

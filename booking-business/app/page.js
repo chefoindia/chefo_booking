@@ -10,6 +10,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import ScrollReveal from "@/components/ScrollReveal";
+import ResumeSession from "@/components/ResumeSession";
 import { BRAND } from "@/lib/brand";
 
 export const metadata = {
@@ -248,6 +249,9 @@ function BookingPagePreview({ wide }) {
 export default function LandingPage() {
     return (
         <div className="ol">
+            {/* Renders nothing. Bounces an already-signed-in operator to their
+                dashboard rather than making them find "Sign in" every time. */}
+            <ResumeSession />
             <style>{`
         .ol { min-height: 100vh; background: #faf7f2; color: #1c2520; font-family: var(--font-body), system-ui, sans-serif; }
         .ol * { box-sizing: border-box; }

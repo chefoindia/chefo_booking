@@ -38,7 +38,10 @@ export default function Topbar({
                         <option value="closed">Closed</option>
                     </select>
                 ) : null}
-                <span className={`badge ${accepting ? "badge-green" : "badge-red"}`}>
+                {/* On a phone this duplicates the select beside it, so it is
+                    hidden there — unless there is no select, in which case it
+                    is the only thing reporting the status. */}
+                <span className={`badge ${accepting ? "badge-green" : "badge-red"}${canChangeStatus ? " topbar-status-echo" : ""}`}>
                     {accepting ? "Open" : "Closed"}
                 </span>
             </div>
