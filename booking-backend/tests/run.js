@@ -6,6 +6,11 @@
 // data. Time is injected where a scenario needs to be "before" or "after" a
 // cutoff, because waiting until 10:31 AM is not a test strategy.
 require("dotenv").config();
+// The daily-report scenarios need the mailer to consider itself configured
+// so the routes and the scheduler run; the transport is stubbed below, so no
+// real email is ever sent from this suite.
+process.env.BREVO_API_KEY = process.env.BREVO_API_KEY || "test-key";
+process.env.MAIL_FROM = process.env.MAIL_FROM || "Test <test@test.local>";
 const express = require("express");
 const cookieParser = require("cookie-parser");
 const bcrypt = require("bcryptjs");
@@ -1216,6 +1221,181 @@ async function main() {
         JSON.stringify(r.data.byOutlet.map((o) => [o.name, o.active, o.totalQuantity])));
     r = await call("PATCH", `/api/outlets/${blockB.id}`, { cookie: ownerCookie, body: { active: true } });
     check("and it can be reactivated", r.status === 200 && r.data.outlet.active === true);
+
+    /* ================= SCENARIO R =================
+       The daily report: a formal email of the day's bookings with the kitchen
+       sheet attached as a PDF, sent once a day at the owner's chosen time.
+       The mailer's transport is stubbed so every "send" here is captured
+       rather than delivered, and the scheduler is driven with an injected
+       clock. */
+    section("R — daily report: settings are owner-level and validated");
+    const mailer = require("../services/mailer");
+    const dailyReport = require("../services/dailyReport");
+    const scheduler = require("../services/reportScheduler");
+    const sentMail = [];
+    let transportShouldFail = false;
+    mailer.setTransport(async (payload) => {
+        if (transportShouldFail) throw Object.assign(new Error("Brevo is down (simulated)"), { status: 502, code: "MAIL_FAILED" });
+        sentMail.push(payload);
+        return { messageId: `stub-${sentMail.length}` };
+    });
+
+    r = await call("GET", "/api/config/daily-report", { cookie: scanCookie });
+    check("counter staff cannot read the report settings (403)", r.status === 403, String(r.status));
+    r = await call("PATCH", "/api/config/daily-report", { cookie: viewA, body: { enabled: true } });
+    check("a viewer cannot change them (403)", r.status === 403, String(r.status));
+    r = await call("GET", "/api/config/daily-report", { cookie: ownerCookie });
+    check("the owner reads sensible defaults", r.status === 200 && r.data.dailyReport.enabled === false && r.data.dailyReport.time === "21:00" && r.data.dailyReport.recipients.length === 0,
+        JSON.stringify(r.data.dailyReport));
+    check("the page is told whether email is set up on the server", typeof r.data.dailyReport.mailConfigured === "boolean");
+
+    r = await call("PATCH", "/api/config/daily-report", { cookie: ownerCookie, body: { time: "9pm" } });
+    check("a malformed time is refused (400)", r.status === 400, `${r.status} ${r.data?.message}`);
+    r = await call("PATCH", "/api/config/daily-report", { cookie: ownerCookie, body: { recipients: ["owner@test.local", "not-an-email"] } });
+    check("a bad address is refused and named", r.status === 400 && /not-an-email/.test(r.data?.message || ""), `${r.status} ${r.data?.message}`);
+    r = await call("PATCH", "/api/config/daily-report", { cookie: ownerCookie, body: { enabled: true } });
+    check("it cannot be switched on with nobody to send to", r.status === 400, `${r.status} ${r.data?.message}`);
+    r = await call("PATCH", "/api/config/daily-report", { cookie: ownerCookie, body: { recipients: Array.from({ length: 11 }, (_, i) => `r${i}@test.local`) } });
+    check("more than ten recipients is refused", r.status === 400, String(r.status));
+
+    r = await call("PATCH", "/api/config/daily-report", {
+        cookie: ownerCookie,
+        body: { time: "21:30", recipients: [" ZZOwner@test.local ", "kitchen@test.local", "zzowner@test.local"], enabled: true, includeTomorrow: true },
+    });
+    check("a valid schedule saves", r.status === 200 && r.data.dailyReport.enabled === true && r.data.dailyReport.time === "21:30", JSON.stringify(r.data));
+    check("addresses are trimmed, lower-cased and de-duplicated",
+        JSON.stringify(r.data.dailyReport.recipients) === JSON.stringify(["zzowner@test.local", "kitchen@test.local"]), JSON.stringify(r.data.dailyReport.recipients));
+
+    /* ---- the numbers ---- */
+    section("R — the report's numbers are the dashboard's numbers");
+    const rep = await dailyReport.buildDayReport({ businessId: business._id, date: D });
+    const dash = (await call("GET", `/api/dashboard/today?date=${D}`, { cookie: ownerCookie })).data;
+    check("total meals match the dashboard exactly", rep.totals.confirmedQuantity === dash.totals.confirmedQuantity, `${rep.totals.confirmedQuantity} vs ${dash.totals.confirmedQuantity}`);
+    check("total bookings match the dashboard exactly", rep.totals.bookings === dash.totals.bookings, `${rep.totals.bookings} vs ${dash.totals.bookings}`);
+    const repLunch = rep.services.find((s) => s.name === "Lunch");
+    const dashLunch = dash.services.find((s) => s.key === "lunch");
+    check("per-service, per-option counts match", JSON.stringify(repLunch.confirmed.byVariant.map((v) => v.quantity)) === JSON.stringify(dashLunch.confirmed.byVariant.map((v) => v.quantity)),
+        JSON.stringify([repLunch.confirmed.byVariant, dashLunch.confirmed.byVariant]));
+    check("late (after-cutoff) bookings are surfaced", rep.totals.late.bookings >= 1 && repLunch.late.bookings >= 1, JSON.stringify(rep.totals.late));
+    check("collected meals are counted from the counter's scans", rep.totals.served.bookings >= 1, JSON.stringify(rep.totals.served));
+    check("collected never exceeds confirmed", rep.totals.served.quantity <= rep.totals.confirmedQuantity && rep.totals.awaiting.quantity === rep.totals.confirmedQuantity - rep.totals.served.quantity);
+    check("cancelled bookings are reported but never counted", rep.totals.cancelled.bookings >= 1
+        && rep.services.every((s) => s.bookings.filter((b) => b.status === "confirmed").reduce((n, b) => n + b.totalQuantity, 0) === s.confirmed.totalQuantity),
+        JSON.stringify(rep.totals.cancelled));
+    check("the outlet breakdown adds up to the overall", rep.byOutlet && rep.byOutlet.reduce((n, o) => n + o.totalQuantity, 0) === rep.totals.confirmedQuantity,
+        JSON.stringify(rep.byOutlet?.map((o) => [o.name, o.totalQuantity])));
+    check("tomorrow's outlook carries tomorrow's confirmed bookings", rep.tomorrow.date === D1 && rep.tomorrow.confirmedQuantity === (await call("GET", `/api/dashboard/today?date=${D1}`, { cookie: ownerCookie })).data.totals.confirmedQuantity,
+        JSON.stringify(rep.tomorrow));
+    check("the booking list carries what the kitchen needs", repLunch.bookings.every((b) => b.reference && b.customer && Array.isArray(b.lines) && "consumedAt" in b && "status" in b));
+    check("no credential-shaped field reaches the report", !JSON.stringify(rep).includes("passwordHash") && !JSON.stringify(rep).includes("ticket"));
+
+    /* ---- the documents ---- */
+    section("R — the email and the PDF");
+    const mail = dailyReport.renderEmail(rep, { pdfName: "x.pdf" });
+    check("subject is formal and names business and date", mail.subject === `Daily Booking Report — ZZ Test Canteen — ${rep.dateLabel}`, mail.subject);
+    check("the body reports the totals", mail.html.includes(String(rep.totals.confirmedQuantity)) && mail.html.includes("By meal service") && mail.html.includes("Lunch"), "");
+    check("the body names the attachment", mail.html.includes("x.pdf"));
+    check("the body has a plain-text twin", /DAILY BOOKING REPORT/.test(mail.text) && mail.text.includes("Lunch"));
+    check("nothing informal in the copy", !/😀|🍽|awesome|hey there/i.test(mail.html));
+    check("customer names are HTML-escaped", !mail.html.includes("<script"));
+    const pdfBuf = await dailyReport.renderPdf(rep);
+    check("the PDF renders", Buffer.isBuffer(pdfBuf) && pdfBuf.slice(0, 5).toString() === "%PDF-" && pdfBuf.length > 3000, `${pdfBuf.length}`);
+    // Content streams are compressed, so the words are not greppable; the
+    // page tree is. One page or more, and a real /Pages object.
+    const pdfText = pdfBuf.toString("latin1");
+    const pageCount = Number((pdfText.match(/\/Type\s*\/Pages[^>]*\/Count\s+(\d+)/) || pdfText.match(/\/Count\s+(\d+)[^>]*\/Type\s*\/Pages/) || [])[1] || 0);
+    check("the PDF has a page tree with at least one page", pageCount >= 1 && pdfText.includes("/Type /Page"), String(pageCount));
+
+    r = await call("GET", `/api/config/daily-report/preview?date=${D}`, { cookie: ownerCookie });
+    check("the settings page can preview the email", r.status === 200 && r.data.subject === mail.subject && r.data.html.includes("Daily Booking Report"), `${r.status}`);
+    const pdfRes = await fetch(`${base}/api/config/daily-report/preview.pdf?date=${D}`, { headers: { Cookie: ownerCookie } });
+    const pdfBody = Buffer.from(await pdfRes.arrayBuffer());
+    check("...and download the PDF exactly as it will be attached", pdfRes.status === 200 && /application\/pdf/.test(pdfRes.headers.get("content-type") || "") && pdfBody.slice(0, 5).toString() === "%PDF-",
+        `${pdfRes.status} ${pdfRes.headers.get("content-type")}`);
+    r = await call("GET", `/api/config/daily-report/preview?date=${D}`, { cookie: scanCookie });
+    check("counter staff cannot preview it (403)", r.status === 403, String(r.status));
+
+    /* ---- sending ---- */
+    section("R — send now, send a test, and what each one counts as");
+    sentMail.length = 0;
+    r = await call("POST", "/api/config/daily-report/send", { cookie: ownerCookie, body: { to: "tester@test.local" } });
+    check("a test send goes to that one address only", r.status === 200 && sentMail.length === 1 && sentMail[0].to.length === 1 && sentMail[0].to[0].email === "tester@test.local",
+        `${r.status} ${JSON.stringify(sentMail.map((m) => m.to))}`);
+    check("with the PDF attached", sentMail[0].attachment?.length === 1 && /\.pdf$/.test(sentMail[0].attachment[0].name)
+        && Buffer.from(sentMail[0].attachment[0].content, "base64").slice(0, 5).toString() === "%PDF-", JSON.stringify(sentMail[0].attachment?.map((a) => a.name)));
+    check("and both an HTML and a text body", sentMail[0].htmlContent?.includes("Daily Booking Report") && sentMail[0].textContent?.includes("DAILY BOOKING REPORT"));
+    r = await call("GET", "/api/config/daily-report", { cookie: ownerCookie });
+    check("a test does not count as today's delivery", r.data.dailyReport.lastSent === null, JSON.stringify(r.data.dailyReport.lastSent));
+    r = await call("POST", "/api/config/daily-report/send", { cookie: ownerCookie, body: { to: "nope" } });
+    check("a bad test address is refused", r.status === 400, String(r.status));
+
+    sentMail.length = 0;
+    r = await call("POST", "/api/config/daily-report/send", { cookie: ownerCookie, body: {} });
+    check("send-now goes to every configured recipient in one message", r.status === 200 && sentMail.length === 1 && sentMail[0].to.map((t) => t.email).sort().join(",") === "kitchen@test.local,zzowner@test.local",
+        `${r.status} ${JSON.stringify(sentMail.map((m) => m.to))}`);
+    r = await call("GET", "/api/config/daily-report", { cookie: ownerCookie });
+    check("and counts as today's delivery", r.data.dailyReport.lastSent?.date === D, JSON.stringify(r.data.dailyReport.lastSent));
+    r = await call("POST", "/api/config/daily-report/send", { cookie: viewA, body: {} });
+    check("a viewer cannot trigger a send (403)", r.status === 403, String(r.status));
+
+    /* ---- the scheduler ---- */
+    section("R — the scheduler sends once, at the chosen time, and retries sanely");
+    process.env.DAILY_REPORT_FORCE = "1";
+    const bizNow = () => Business.findById(business._id).lean();
+    const clockAt = (hhmm) => zonedInstant(D, hhmm, 330);
+    let bz = await bizNow();
+    check("not due before the chosen time", scheduler.isDue(bz, clockAt("21:00")) === false);
+    check("not due after the time either, because today's already went", scheduler.isDue(bz, clockAt("21:45")) === false);
+    await Business.updateOne({ _id: business._id }, { $set: { "dailyReport.lastSent": { date: "", at: null, to: [] }, "dailyReport.lastAttempt": { date: "", at: null, attempts: 0, error: "" } } });
+    bz = await bizNow();
+    check("due once the time has passed and nothing went today", scheduler.isDue(bz, clockAt("21:31")) === true);
+    check("still not due a minute before", scheduler.isDue(bz, clockAt("21:29")) === false);
+
+    // Two processes racing for the same business: exactly one wins the claim.
+    const [c1, c2] = await Promise.all([scheduler.claim(bz, clockAt("21:31")), scheduler.claim(bz, clockAt("21:31"))]);
+    check("a concurrent claim is won by exactly one caller", [c1, c2].filter(Boolean).length === 1, JSON.stringify([Boolean(c1), Boolean(c2)]));
+    await Business.updateOne({ _id: business._id }, { $set: { "dailyReport.lastAttempt": { date: "", at: null, attempts: 0, error: "" } } });
+
+    sentMail.length = 0;
+    let t1 = await scheduler.tick(clockAt("21:31"));
+    check("a tick past the time sends the report", t1.sent.some((s) => s.business === "ZZ Test Canteen") && sentMail.length === 1, JSON.stringify(t1));
+    check("to the configured recipients", sentMail[0]?.to.length === 2, JSON.stringify(sentMail[0]?.to));
+    let t2 = await scheduler.tick(clockAt("21:32"));
+    check("the next tick does not send it again", !t2.sent.some((s) => s.business === "ZZ Test Canteen") && sentMail.length === 1, JSON.stringify(t2));
+    bz = await bizNow();
+    check("the send is remembered on the business", bz.dailyReport.lastSent.date === D && bz.dailyReport.lastSent.to.length === 2, JSON.stringify(bz.dailyReport.lastSent));
+
+    // Failure: recorded, retried after a pause, then given up on for the day.
+    await Business.updateOne({ _id: business._id }, { $set: { "dailyReport.lastSent": { date: "", at: null, to: [] }, "dailyReport.lastAttempt": { date: "", at: null, attempts: 0, error: "" } } });
+    transportShouldFail = true;
+    sentMail.length = 0;
+    t1 = await scheduler.tick(clockAt("21:31"));
+    check("a failed send is reported, not thrown", t1.failed.some((f) => f.business === "ZZ Test Canteen"), JSON.stringify(t1));
+    bz = await bizNow();
+    check("the error is kept for the settings page", /simulated/.test(bz.dailyReport.lastAttempt.error) && bz.dailyReport.lastAttempt.attempts === 1, JSON.stringify(bz.dailyReport.lastAttempt));
+    t2 = await scheduler.tick(clockAt("21:33"));
+    check("it is not retried immediately", !t2.failed.some((f) => f.business === "ZZ Test Canteen") && !t2.sent.length, JSON.stringify(t2));
+    t2 = await scheduler.tick(clockAt("21:45"));
+    bz = await bizNow();
+    check("it is retried after the pause", bz.dailyReport.lastAttempt.attempts === 2, JSON.stringify(bz.dailyReport.lastAttempt));
+    transportShouldFail = false;
+    t2 = await scheduler.tick(clockAt("22:00"));
+    bz = await bizNow();
+    check("and succeeds once the cause is fixed", t2.sent.some((s) => s.business === "ZZ Test Canteen") && bz.dailyReport.lastSent.date === D && bz.dailyReport.lastAttempt.error === "", JSON.stringify(bz.dailyReport));
+
+    // Switched off: nothing goes, whatever the clock says.
+    await Business.updateOne({ _id: business._id }, { $set: { "dailyReport.enabled": false, "dailyReport.lastSent": { date: "", at: null, to: [] } } });
+    sentMail.length = 0;
+    t2 = await scheduler.tick(clockAt("23:00"));
+    check("a switched-off report never sends", sentMail.length === 0 && !t2.sent.some((s) => s.business === "ZZ Test Canteen"));
+
+    await new Promise((res) => setTimeout(res, 700));
+    const reportAudit = await AuditLog.find({ businessId: business._id, action: /daily/i }).lean();
+    check("every send is on the activity log", reportAudit.some((x) => /Emailed the daily booking report/.test(x.action)) && reportAudit.some((x) => /test daily report/.test(x.action)) && reportAudit.some((x) => /on demand/.test(x.action)),
+        reportAudit.map((x) => x.action).join(" | "));
+    check("the schedule change is on the log too", reportAudit.some((x) => /Updated the daily report schedule/.test(x.action)));
+    mailer.setTransport(null);
+    delete process.env.DAILY_REPORT_FORCE;
 
     /* ---------- cleanup ---------- */
     server.close();

@@ -125,7 +125,7 @@ export default function ProfileTab() {
                     <div>
                         <label className="label">Mobile number</label>
                         <div className="row" style={{ gap: 8 }}>
-                            <span className="input" style={{ width: 62, textAlign: "center", background: "var(--paper)", flexShrink: 0 }}>+91</span>
+                            <span className="input-prefix" style={{ alignSelf: "stretch" }}>+91</span>
                             <input className="input" placeholder="Mobile number" inputMode="numeric" maxLength={10}
                                 autoComplete="tel-national" value={me.phone || ""}
                                 onChange={(e) => saveMe({ phone: e.target.value.replace(/\D/g, "").slice(0, 10) })} />

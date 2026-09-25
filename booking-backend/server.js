@@ -91,6 +91,10 @@ connectDB()
             console.log(`${BRAND.productName} API running on port ${PORT}`);
             console.log(`Allowed origins: ${allowedOrigins.join(", ")}`);
         });
+        // The daily report emails go out from here, once a day per business,
+        // at the time each owner chose. Safe to run in several processes:
+        // each send is claimed atomically first (services/reportScheduler.js).
+        require("./services/reportScheduler").start();
     })
     .catch((err) => {
         console.error("Failed to start — could not connect to MongoDB:", err.message);

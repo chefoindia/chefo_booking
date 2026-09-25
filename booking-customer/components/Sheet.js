@@ -1,18 +1,14 @@
 "use client";
 // components/Sheet.js — THE secondary surface of this app.
 //
-// Ported from the Chefo customer app, and for the same reason: everything that
-// would be a dialog elsewhere slides up from the bottom here. On a phone that
-// keeps the controls under a thumb, keeps the screen behind it visible so
-// nobody loses their place, and makes "close" a gesture rather than a
-// back-button gamble.
-//
-// The booking form lives in one of these now. It used to be its own page, and
-// a full navigation away from the calendar to fill in four fields is exactly
-// the kind of thing that makes a small app feel like a website.
+// Everything that would be a dialog elsewhere slides up from the bottom here.
+// On a phone that keeps the controls under a thumb, keeps the screen behind it
+// visible so nobody loses their place, and makes "close" a gesture rather than
+// a back-button gamble. The booking form lives in one of these.
 import { useEffect } from "react";
+import { Icon, PATHS } from "@/components/Icons";
 
-export default function Sheet({ open, onClose, title, subtitle, children, footer }) {
+export default function Sheet({ open, onClose, title, subtitle, children, footer, headExtra = null }) {
     useEffect(() => {
         if (!open) return;
         const onKey = (e) => { if (e.key === "Escape") onClose?.(); };
@@ -37,7 +33,12 @@ export default function Sheet({ open, onClose, title, subtitle, children, footer
                         <div className="sheet-title">{title}</div>
                         {subtitle && <div className="sheet-sub">{subtitle}</div>}
                     </div>
-                    <button className="sheet-x" onClick={onClose} aria-label="Close">×</button>
+                    <div className="row" style={{ gap: 8, flexShrink: 0 }}>
+                        {headExtra}
+                        <button className="sheet-x" onClick={onClose} aria-label="Close">
+                            <Icon d={PATHS.x} size={18} sw={2.2} />
+                        </button>
+                    </div>
                 </div>
                 <div className="sheet-body">{children}</div>
                 {footer && <div className="sheet-foot">{footer}</div>}

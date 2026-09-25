@@ -557,4 +557,177 @@ router.put("/api/config/qr-poster",
         } catch (err) { next(err); }
     });
 
+/* ------------------------------------------------------------------ */
+/* DAILY REPORT BY EMAIL                                                */
+/* ------------------------------------------------------------------ */
+// The owner picks a time and a list of addresses; every day at that time the
+// scheduler (services/reportScheduler.js) emails the day's bookings with the
+// kitchen sheet attached as a PDF. Settings live on the business, so every
+// owner sees the same schedule and the same recipients.
+const { sendDailyReport, buildDayReport, renderEmail, renderPdf, pdfFileName } = require("../services/dailyReport");
+const { isDateKey, todayKey } = require("../utils/time");
+const mailer = require("../services/mailer");
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+const MAX_RECIPIENTS = 10;
+
+/** What the settings page shows — the config plus the scheduler's memory. */
+const publicDailyReport = (business) => {
+    const d = business.dailyReport || {};
+    return {
+        enabled: Boolean(d.enabled),
+        time: d.time || "21:00",
+        recipients: d.recipients || [],
+        attachPdf: d.attachPdf !== false,
+        includeBookingList: d.includeBookingList !== false,
+        includeTomorrow: d.includeTomorrow !== false,
+        lastSent: d.lastSent?.at ? { date: d.lastSent.date, at: d.lastSent.at, to: d.lastSent.to || [] } : null,
+        lastError: d.lastAttempt?.error ? { at: d.lastAttempt.at, date: d.lastAttempt.date, message: d.lastAttempt.error, attempts: d.lastAttempt.attempts || 0 } : null,
+        mailConfigured: mailer.isConfigured(),
+        timezone: business.timezoneOffsetMinutes ?? 330,
+    };
+};
+
+/** Cleans a recipient list; returns { list } or { error }. */
+function cleanRecipients(raw) {
+    if (!Array.isArray(raw)) return { error: "Send the recipients as a list of email addresses." };
+    const list = [...new Set(raw.map((e) => clean(e, 120).toLowerCase()).filter(Boolean))];
+    const bad = list.find((e) => !EMAIL_RE.test(e));
+    if (bad) return { error: `"${bad}" isn't a valid email address.` };
+    if (list.length > MAX_RECIPIENTS) return { error: `Keep the daily report to ${MAX_RECIPIENTS} recipients or fewer.` };
+    return { list };
+}
+
+router.get("/api/config/daily-report",
+    authenticate, requirePermission("config.view"),
+    async (req, res, next) => {
+        try {
+            const business = await Business.findById(req.businessId).select("dailyReport timezoneOffsetMinutes").lean();
+            res.json({ dailyReport: publicDailyReport(business) });
+        } catch (err) { next(err); }
+    });
+
+router.patch("/api/config/daily-report",
+    authenticate, requirePermission("config.edit"),
+    async (req, res, next) => {
+        try {
+            const business = await Business.findById(req.businessId);
+            const b = req.body || {};
+            const d = business.dailyReport;
+            const before = { enabled: d.enabled, time: d.time, recipients: [...(d.recipients || [])] };
+
+            if (b.time !== undefined) {
+                if (!isTimeOfDay(b.time)) return res.status(400).json({ message: "Pick a delivery time in HH:MM format." });
+                d.time = b.time;
+            }
+            if (b.recipients !== undefined) {
+                const r = cleanRecipients(b.recipients);
+                if (r.error) return res.status(400).json({ message: r.error });
+                d.recipients = r.list;
+            }
+            for (const k of ["attachPdf", "includeBookingList", "includeTomorrow"]) {
+                if (b[k] !== undefined) d[k] = Boolean(b[k]);
+            }
+            if (b.enabled !== undefined) {
+                const on = Boolean(b.enabled);
+                if (on && !d.recipients.length) {
+                    return res.status(400).json({ message: "Add at least one email address before switching the daily report on." });
+                }
+                if (on && !mailer.isConfigured()) {
+                    return res.status(400).json({ message: "Email isn't set up on this server, so the report can't be delivered yet.", code: "MAIL_UNCONFIGURED" });
+                }
+                d.enabled = on;
+            }
+            // A change to the schedule clears a stale failure: the owner has
+            // acted, and the next attempt should be judged on its own.
+            if (d.lastAttempt) d.lastAttempt.error = "";
+
+            business.markModified("dailyReport");
+            await business.save();
+
+            record({
+                businessId: req.businessId, actor: req.actor, requestMeta: meta(req),
+                action: "Updated the daily report schedule",
+                before, after: { enabled: d.enabled, time: d.time, recipients: [...d.recipients] },
+            });
+            notify("config.changed", {
+                businessId: req.businessId, actor: req.actor, requestMeta: meta(req),
+                title: "Daily report settings changed",
+                summary: d.enabled
+                    ? `The daily booking report will be emailed every day at ${d.time} to ${d.recipients.length} address${d.recipients.length === 1 ? "" : "es"}.`
+                    : "The daily booking report is switched off.",
+                rows: [
+                    { label: "Status", value: d.enabled ? "On" : "Off" },
+                    { label: "Delivery time", value: d.time },
+                    { label: "Recipients", value: d.recipients.join(", ") || "None" },
+                ],
+                concern: CONCERN.config,
+            });
+            res.json({ dailyReport: publicDailyReport(business.toObject()) });
+        } catch (err) { next(err); }
+    });
+
+/**
+ * Send today's (or a chosen day's) report right now — to the configured
+ * recipients, or to a single test address. A send to the configured list
+ * counts as today's delivery so the schedule does not repeat it; a test send
+ * never does.
+ */
+router.post("/api/config/daily-report/send",
+    authenticate, requirePermission("config.edit"),
+    async (req, res, next) => {
+        try {
+            const business = await Business.findById(req.businessId);
+            const date = isDateKey(req.body?.date) ? req.body.date : undefined;
+            const testTo = clean(req.body?.to, 120).toLowerCase();
+            if (testTo && !EMAIL_RE.test(testTo)) return res.status(400).json({ message: "Enter a valid email address for the test." });
+            const recipients = testTo ? [testTo] : business.dailyReport?.recipients || [];
+            if (!recipients.length) return res.status(400).json({ message: "Add at least one recipient, or enter an address to send a test to." });
+
+            const result = await sendDailyReport({
+                business, date, recipients, trigger: testTo ? "test" : "manual", actor: req.actor,
+            });
+
+            const tz = business.timezoneOffsetMinutes ?? 330;
+            if (!testTo && result.date === todayKey(tz)) {
+                business.dailyReport.lastSent = { date: result.date, at: new Date(), to: result.to };
+                business.dailyReport.lastAttempt.error = "";
+                business.markModified("dailyReport");
+                await business.save();
+            }
+            res.json({ ok: true, ...result, countsAsToday: !testTo });
+        } catch (err) { next(err); }
+    });
+
+/** The email exactly as it will be sent, for an on-screen preview. */
+router.get("/api/config/daily-report/preview",
+    authenticate, requirePermission("config.view"),
+    async (req, res, next) => {
+        try {
+            const business = await Business.findById(req.businessId).select("dailyReport").lean();
+            const cfg = business.dailyReport || {};
+            const report = await buildDayReport({ businessId: req.businessId, date: isDateKey(req.query.date) ? req.query.date : undefined });
+            const mail = renderEmail(report, { attachPdf: cfg.attachPdf !== false, includeTomorrow: cfg.includeTomorrow !== false, pdfName: pdfFileName(report) });
+            res.json({
+                subject: mail.subject, html: mail.html, date: report.date, dateLabel: report.dateLabel,
+                totals: report.totals, pdfName: pdfFileName(report),
+            });
+        } catch (err) { next(err); }
+    });
+
+/** The PDF exactly as it will be attached, for download from the settings page. */
+router.get("/api/config/daily-report/preview.pdf",
+    authenticate, requirePermission("config.view"),
+    async (req, res, next) => {
+        try {
+            const business = await Business.findById(req.businessId).select("dailyReport").lean();
+            const cfg = business.dailyReport || {};
+            const report = await buildDayReport({ businessId: req.businessId, date: isDateKey(req.query.date) ? req.query.date : undefined });
+            const pdf = await renderPdf(report, { includeBookingList: cfg.includeBookingList !== false, includeTomorrow: cfg.includeTomorrow !== false });
+            res.setHeader("Content-Type", "application/pdf");
+            res.setHeader("Content-Disposition", `inline; filename="${pdfFileName(report)}"`);
+            res.send(pdf);
+        } catch (err) { next(err); }
+    });
+
 module.exports = router;

@@ -24,16 +24,53 @@ const isConfigured = () => Boolean(process.env.BREVO_API_KEY && process.env.MAIL
 /**
  * Send one email. Resolves when Brevo has accepted it; rejects on any failure
  * with a message safe to surface ("Couldn't send the email").
+ *
+ * Either `to` (one address) or `recipients` ([{ email, name }]) — the daily
+ * report goes to a list, everything else to one person. `attachments` is
+ * [{ name, content }] where content is a Buffer or a base64 string; Brevo
+ * takes base64 inline, so a PDF built in memory never touches the disk.
+ *
+ * `transport` is the one seam for tests: the acceptance suite must prove a
+ * report is built, attached and addressed without spending a real send.
  */
-async function sendMail({ to, toName = "", subject, html, text }) {
-    if (!isConfigured()) {
+let transport = null;
+function setTransport(fn) { transport = typeof fn === "function" ? fn : null; }
+
+async function sendMail({ to, toName = "", recipients = null, subject, html, text, attachments = [] }) {
+    if (!isConfigured() && !transport) {
         const e = new Error("Email isn't set up on this server.");
         e.status = 503;
         e.code = "MAIL_UNCONFIGURED";
         e.expose = true;   // a 5xx the caller is meant to read — see middleware/errors.js
         throw e;
     }
-    const sender = parseFrom(process.env.MAIL_FROM);
+    const sender = parseFrom(process.env.MAIL_FROM || `${BRAND.productName} <no-reply@${BRAND.domain}>`);
+
+    const toList = Array.isArray(recipients) && recipients.length
+        ? recipients.map((r) => (typeof r === "string" ? { email: r } : { email: r.email, ...(r.name ? { name: r.name } : {}) }))
+        : [{ email: to, ...(toName ? { name: toName } : {}) }];
+    if (!toList.every((r) => r.email)) {
+        const e = new Error("No recipient for this email.");
+        e.status = 400;
+        e.code = "MAIL_NO_RECIPIENT";
+        throw e;
+    }
+
+    const payload = {
+        sender,
+        to: toList,
+        subject,
+        htmlContent: html,
+        ...(text ? { textContent: text } : {}),
+        ...(attachments.length ? {
+            attachment: attachments.map((a) => ({
+                name: a.name,
+                content: Buffer.isBuffer(a.content) ? a.content.toString("base64") : String(a.content),
+            })),
+        } : {}),
+    };
+
+    if (transport) return transport(payload);
 
     let res;
     try {
@@ -44,13 +81,7 @@ async function sendMail({ to, toName = "", subject, html, text }) {
                 "content-type": "application/json",
                 accept: "application/json",
             },
-            body: JSON.stringify({
-                sender,
-                to: [{ email: to, ...(toName ? { name: toName } : {}) }],
-                subject,
-                htmlContent: html,
-                ...(text ? { textContent: text } : {}),
-            }),
+            body: JSON.stringify(payload),
         });
     } catch (err) {
         console.error("mailer: network error:", err.message);
@@ -155,4 +186,4 @@ function activityNoticeEmail({ title, summary, rows = [], concern, businessName,
     };
 }
 
-module.exports = { sendMail, isConfigured, passwordResetEmail, welcomeEmail, activityNoticeEmail };
+module.exports = { sendMail, setTransport, isConfigured, passwordResetEmail, welcomeEmail, activityNoticeEmail };

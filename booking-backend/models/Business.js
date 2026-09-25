@@ -133,6 +133,41 @@ const businessSchema = new mongoose.Schema(
         // the server only keeps it and hands it back.
         qrPoster: { type: mongoose.Schema.Types.Mixed, default: null },
 
+        /* ---- DAILY REPORT BY EMAIL -------------------------------------------
+           Once a day, at a time the owner picks, the day's bookings are emailed
+           as a formal summary with the full kitchen sheet attached as a PDF.
+           Business-level rather than per-user because the recipients are a
+           list the owner curates (themselves, the kitchen lead, the accounts
+           desk) and the report is the same document for all of them.
+
+           `lastSent` and `lastAttempt` are the scheduler's memory: the date key
+           (in the business's own timezone) of the last successful send, and of
+           the last try. Both are what stop two server processes — or one
+           process restarting — from emailing the same report twice. See
+           services/reportScheduler.js. */
+        dailyReport: {
+            enabled: { type: Boolean, default: false },
+            // Wall-clock "HH:MM" in the business timezone. 21:00 is a
+            // sensible end-of-day default: every service has finished and
+            // every counter scan is in.
+            time: { type: String, default: "21:00" },
+            recipients: { type: [String], default: [] },
+            attachPdf: { type: Boolean, default: true },
+            includeBookingList: { type: Boolean, default: true },
+            includeTomorrow: { type: Boolean, default: true },
+            lastSent: {
+                date: { type: String, default: "" },
+                at: { type: Date, default: null },
+                to: { type: [String], default: [] },
+            },
+            lastAttempt: {
+                date: { type: String, default: "" },
+                at: { type: Date, default: null },
+                attempts: { type: Number, default: 0 },
+                error: { type: String, default: "" },
+            },
+        },
+
         // WHEN THE SIGNUP WIZARD WAS FINISHED. null means the owner verified
         // their mobile — so the tenant and the account genuinely exist — but
         // never got past the business-details step. The dashboard sends them

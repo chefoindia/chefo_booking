@@ -147,7 +147,7 @@ export default function AccountSheet({ slug, onClose, onDone }) {
                             <input className="input" placeholder="Your name" autoComplete="name"
                                 value={name} onChange={(e) => setName(e.target.value)} />
                             <div className="row" style={{ gap: 8 }}>
-                                <span className="input" style={{ width: 62, textAlign: "center", background: "var(--paper)", flexShrink: 0 }}>+91</span>
+                                <span className="input-prefix" style={{ alignSelf: "stretch" }}>+91</span>
                                 <input className="input" placeholder="Mobile number" inputMode="numeric"
                                     maxLength={10} autoComplete="tel-national" value={phone}
                                     onChange={(e) => setPhone(e.target.value.replace(/\D/g, "").slice(0, 10))} />

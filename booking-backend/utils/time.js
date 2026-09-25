@@ -125,8 +125,35 @@ function formatTimeOfDay(timeOfDay) {
     return `${h12}:${String(mm).padStart(2, "0")} ${period}`;
 }
 
+/** "IST" for India, otherwise "UTC+05:30"-style — for a report's timestamp line. */
+function zoneLabel(offsetMinutes = IST_OFFSET_MINUTES) {
+    if (offsetMinutes === IST_OFFSET_MINUTES) return "IST";
+    const sign = offsetMinutes < 0 ? "-" : "+";
+    const abs = Math.abs(offsetMinutes);
+    return `UTC${sign}${String(Math.floor(abs / 60)).padStart(2, "0")}:${String(abs % 60).padStart(2, "0")}`;
+}
+
+/**
+ * An instant as "Tue, 8 Sep 2026, 9:05 PM IST" in the business zone. Pure
+ * offset arithmetic, like everything else here, so it never depends on the
+ * server's own timezone database.
+ */
+function formatInstant(instant, offsetMinutes = IST_OFFSET_MINUTES, { date = true, time = true } = {}) {
+    if (!instant) return "";
+    const d = instant instanceof Date ? instant : new Date(instant);
+    if (Number.isNaN(d.getTime())) return "";
+    const shifted = new Date(d.getTime() + offsetMinutes * 60_000);
+    const key = shifted.toISOString().slice(0, 10);
+    const parts = [];
+    if (date) parts.push(formatDateKey(key));
+    if (time) parts.push(`${formatTimeOfDay(shifted.toISOString().slice(11, 16))} ${zoneLabel(offsetMinutes)}`);
+    return parts.join(", ");
+}
+
 module.exports = {
     IST_OFFSET_MINUTES,
+    zoneLabel,
+    formatInstant,
     isDateKey,
     isTimeOfDay,
     zonedInstant,

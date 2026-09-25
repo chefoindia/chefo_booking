@@ -107,7 +107,9 @@ booking-backend/
 │   ├── consumption.js     "Served at the counter" state rules
 │   ├── audit.js           Fire-and-forget audit log writes
 │   ├── notify.js          Owner email notices for sensitive events
-│   └── mailer.js          Brevo transactional email
+│   ├── mailer.js          Brevo transactional email (attachments, lists)
+│   ├── dailyReport.js     The daily booking report: numbers, email, PDF
+│   └── reportScheduler.js Sends each business its report once a day
 ├── utils/
 │   ├── time.js            Cutoff arithmetic in the business's timezone
 │   ├── outletScope.js     Per-user outlet scoping for every operator read
@@ -131,9 +133,9 @@ booking-backend/
 | Auth (operators) | Email + password (bcrypt) or Firebase phone OTP, JWT in an httpOnly cookie |
 | Auth (customers) | Optional Firebase phone OTP, year-long cookie session |
 | Security | helmet, cors, express-rate-limit, express-mongo-sanitize |
-| Email | Brevo (password-reset codes, owner notifications) |
+| Email | Brevo (password-reset codes, owner notifications, the daily booking report) |
 | QR | `qrcode` for generation, `html5-qrcode` for in-browser scanning |
-| Exports | CSV from the API, PDF via `jspdf` + `jspdf-autotable` in the dashboard |
+| Exports | CSV from the API, PDF via `jspdf` + `jspdf-autotable` in the dashboard, daily report PDF via `pdfkit` on the server |
 | Frontends | Next.js 15 (App Router), React 19, plain CSS |
 
 ---
@@ -199,7 +201,7 @@ Seed values are configurable through the `SEED_*` variables in the backend `.env
 | `ALLOWED_ORIGINS` | Yes | Comma-separated browser origins allowed with credentials. |
 | `BRAND_PRODUCT_NAME`, `BRAND_SHORT_NAME`, `BRAND_DOMAIN` | | Branding, read by `config/brand.js`. |
 | `CUSTOMER_APP_URL` | | Used to build QR poster and ticket links. |
-| `BREVO_API_KEY`, `MAIL_FROM` | For email | Password-reset codes and owner notifications. |
+| `BREVO_API_KEY`, `MAIL_FROM` | For email | Password-reset codes, owner notifications and the daily booking report. |
 | `FIREBASE_SERVICE_ACCOUNT_BASE64` | For OTP | Base64 of the service-account JSON. Verifies phone-OTP id tokens. |
 | `SEED_BUSINESS_NAME`, `SEED_BUSINESS_SLUG`, `SEED_OWNER_*`, `SEED_OUTLETS` | | Defaults for `npm run seed`. |
 
@@ -335,6 +337,9 @@ All `/api/public/*` endpoints are unauthenticated and rate-limited.
 | PUT | `/api/config/party-types` | Who books: individual, department, site... |
 | GET / PUT | `/api/config/booking-fields` | Custom questions on the booking form |
 | PUT | `/api/config/qr-poster` | Poster text and layout |
+| GET / PATCH | `/api/config/daily-report` | Daily report schedule: time, recipients, contents, last delivery |
+| POST | `/api/config/daily-report/send` | Send today's report now, or a test to one address (`to`) |
+| GET | `/api/config/daily-report/preview`, `/api/config/daily-report/preview.pdf` | The email and the PDF exactly as they will be sent |
 | GET / POST / PATCH / DELETE | `/api/outlets[/:id]`, `/api/outlets/manage` | Outlets |
 | GET / PUT / DELETE | `/api/menu`, `/api/menu/:mealTypeId/:weekday` | Weekly menu |
 | POST | `/api/menu/copy` | Copy a day's menu to other days |
@@ -374,7 +379,7 @@ as `CUTOFF_PASSED`, `CLOSED`, `MEAL_CLOSED`, `EDIT_OFF`, `REQUEST_OPEN`,
 | `/dashboard/qr` | Printable QR poster linking to the customer booking page |
 | `/dashboard/team` | Users, roles and permissions, outlet restrictions |
 | `/dashboard/logs` | Activity log |
-| `/dashboard/settings` | Business details, meal services, variants, rules, booking fields, outlets, notifications, profile |
+| `/dashboard/settings` | Business details, meal services, variants, rules, booking fields, outlets, daily report email, notifications, profile |
 
 Shared components include `Topbar`, `OutletSelector` (switch the outlet a
 canteen-wide user is viewing), `OutletScopeLine` (shows which outlets the
@@ -388,12 +393,18 @@ current user is limited to) and `OutletsSection` (settings editor).
 |---|---|
 | `/` | Landing, or redirect to `NEXT_PUBLIC_DEFAULT_BUSINESS` |
 | `/b/[slug]` | Business home: services, cutoffs, today's menu |
-| `/b/[slug]/book` | Booking form (`BookSheet`): date, service, quantities per variant, party details, custom questions |
+| `/b/[slug]/book` | Opens the booking sheet (`BookSheet`): four numbered steps — day (week strip + calendar), meal service, quantities per variant, details (outlet, party, custom questions) — with a running summary in the footer and the pass on confirmation |
 | `/b/[slug]/menu` | Weekly menu |
 | `/b/[slug]/bookings` | My bookings: tickets held in this browser plus lookup by reference + phone |
 | `/b/[slug]/status` | Legacy link, redirects to bookings |
 | `/b/[slug]/profile` | Optional phone-verified customer account |
 | `/t/[ticket]` | A single booking's ticket with QR (`BookingQr`) |
+
+The app is a single column with a compact top bar (canteen name plus a live
+"open today / closes in…" pill), four tabs and a raised **Book** button in the
+middle of the bottom bar that opens the booking sheet over whichever tab is
+showing. Every meal is shown with its own colour rail and its deadline in
+words, ticking while the screen is open.
 
 Tickets are kept in browser storage through `lib/ledger.js` so a customer sees
 their bookings again without signing in. A verified account (Firebase phone
@@ -460,7 +471,36 @@ npm test
 running MongoDB. It creates its own throwaway business, injects time where a
 scenario must be before or after a cutoff, and covers booking, cutoff refusal,
 operator override, change and cancel, consumption, permission gating, outlet
-scoping and wrong-outlet scanning.
+scoping, wrong-outlet scanning, and the daily report (settings validation,
+numbers against the dashboard, email and PDF rendering, send-now versus test,
+and the scheduler's claim, retry and give-up behaviour). The mail transport is
+stubbed for the run, so no email is ever sent by the suite.
+
+---
+
+## Daily report email
+
+Under **Settings → Daily report by email** the owner picks a delivery time,
+up to ten recipients and what to include. Every day at that time (in the
+business's own timezone) the day's bookings are emailed as a formal summary,
+with the complete booking sheet attached as a PDF.
+
+- **Content.** Meals per service and per option, bookings, what was collected
+  at the counter, bookings taken after the cutoff, cancellations (listed, never
+  counted), the amount when prices are configured, a per-outlet breakdown, and
+  tomorrow's confirmed bookings as an outlook. Every number comes from
+  `services/quantity.js`, so the email can never disagree with the dashboard.
+- **Rendering.** `services/dailyReport.js` builds the numbers, the HTML/plain
+  text email and the PDF (`pdfkit`, A4, letterhead, page numbers).
+- **Scheduling.** `services/reportScheduler.js` ticks every minute. A due
+  business is claimed with an atomic compare-and-swap on its document before
+  anything is sent, so several server processes never send twice. A failed
+  send is retried up to three times, ten minutes apart, then left for the
+  owner, who sees the error on the settings page and can press "Send now".
+- **Send now / test.** "Send today's report now" goes to the configured list
+  and counts as today's delivery. A test send goes to one address and does
+  not. Both are on the activity log. The settings page can also preview the
+  email and download the PDF for any date.
 
 ---
 

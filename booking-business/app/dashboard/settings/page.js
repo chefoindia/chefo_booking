@@ -14,7 +14,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { get, patch, post, put, del } from "@/lib/api";
 import { useAccess } from "../layout";
 import { useToast } from "@/components/ToastProvider";
-import { formatTime, fmtDate, prettyPhone } from "@/lib/format";
+import { formatTime, fmtDate, fmtDateTime, prettyPhone, formatDate, todayKey, shiftDate } from "@/lib/format";
+import { downloadFromApi } from "@/lib/download";
 import { Field, Input, Select, Textarea, Check } from "@/components/Field";
 import Drawer from "@/components/Drawer";
 import ClockTimeInput from "@/components/ClockTimeInput";
@@ -34,7 +35,7 @@ const railFor = (m, i) => {
 /* ------------------------------------------------------------------ */
 /* SETUP SCORE                                                          */
 /* ------------------------------------------------------------------ */
-function scoreSetup({ business, mealTypes, variants, user }) {
+function scoreSetup({ business, mealTypes, variants, user, dailyReport }) {
     const sections = [];
     const add = (key, name, max, pts, why, peek, sug) => sections.push({ key, name, max, pts: Math.min(max, pts), why, peek, sug });
 
@@ -94,6 +95,14 @@ function scoreSetup({ business, mealTypes, variants, user }) {
         add("notifications", "Email notifications", 5, ok ? 5 : 0, "Formal notices when access, settings or data change.",
             ok ? `Delivered to ${user.email}` : "No email on the account",
             ok ? [] : [{ text: "Add an email so activity notices can reach you.", gain: 5, anchor: "account" }]);
+    }
+    {
+        const d = dailyReport || business.dailyReport || {};
+        const on = Boolean(d.enabled) && (d.recipients || []).length > 0;
+        add("dailyreport", "Daily report email", 10, on ? 10 : 0,
+            "Every evening, the day's bookings in your inbox with the kitchen sheet attached as a PDF.",
+            on ? `Every day at ${formatTime(d.time || "21:00")} · ${(d.recipients || []).length} recipient${(d.recipients || []).length === 1 ? "" : "s"}` : "Switched off",
+            on ? [] : [{ text: "Switch on the daily report so the day's bookings reach you by email, PDF attached.", gain: 10, anchor: "dailyreport" }]);
     }
     {
         let pts = 0; const sug = [];
@@ -166,7 +175,7 @@ export default function SettingsPage() {
     };
 
     const score = useMemo(
-        () => (config ? scoreSetup({ business: config.business, mealTypes: config.mealTypes, variants: config.variants, user: access.user }) : null),
+        () => (config ? scoreSetup({ business: config.business, mealTypes: config.mealTypes, variants: config.variants, user: access.user, dailyReport: config.business?.dailyReport }) : null),
         [config, access.user]
     );
 
@@ -205,6 +214,7 @@ export default function SettingsPage() {
                         <RulesSection business={b} canEdit={canEdit} ask={ask} run={runConfirmed} />
                         <PartyTypesSection business={b} canEdit={canEdit} ask={ask} run={runConfirmed} />
                         <BookingQuestionsSection mealTypes={config.mealTypes} partyTypes={b.partyTypes || []} canEdit={canEdit} ask={ask} run={runConfirmed} />
+                        <DailyReportSection user={access.user} canEdit={canEdit} ask={ask} run={runConfirmed} onChanged={load} />
                         <NotificationsSection user={access.user} ask={ask} run={runConfirmed} />
                     </div>
                 )}
@@ -813,6 +823,219 @@ function NotificationsSection({ user, ask, run }) {
               .notif-row { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; padding: 6px 0; }
               .notif-row input { width: 16px; height: 16px; accent-color: var(--basil); margin-top: 3px; flex-shrink: 0; }
             `}</style>
+        </section>
+    );
+}
+
+/* ------------------------------------------------------------------ */
+/* DAILY REPORT BY EMAIL                                                */
+/* ------------------------------------------------------------------ */
+// The day's bookings, emailed at a fixed time with the kitchen sheet attached
+// as a PDF. Settings are business-wide: one schedule, one recipient list,
+// the same document for everyone on it. The server owns the schedule
+// (services/reportScheduler.js); this section only edits it and lets the
+// owner see the email before the first one goes out.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+function DailyReportSection({ user, canEdit, ask, run, onChanged }) {
+    const toast = useToast();
+    const [cfg, setCfg] = useState(null);
+    const [f, setF] = useState(null);
+    const [draft, setDraft] = useState("");
+    const [testTo, setTestTo] = useState("");
+    const [preview, setPreview] = useState(null);      // { subject, html, ... }
+    const [previewDate, setPreviewDate] = useState(todayKey());
+    const [previewBusy, setPreviewBusy] = useState(false);
+    const [pdfBusy, setPdfBusy] = useState(false);
+
+    const pull = useCallback(async () => {
+        try {
+            const r = await get("/api/config/daily-report");
+            setCfg(r.dailyReport);
+            setF({
+                enabled: r.dailyReport.enabled, time: r.dailyReport.time,
+                recipients: [...r.dailyReport.recipients],
+                attachPdf: r.dailyReport.attachPdf, includeBookingList: r.dailyReport.includeBookingList, includeTomorrow: r.dailyReport.includeTomorrow,
+            });
+        } catch (e) { toast("error", "Couldn't load the daily report settings", e.message); }
+    }, [toast]);
+    useEffect(() => { pull(); }, [pull]);
+
+    if (!cfg || !f) return null;
+
+    const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+    const addRecipient = (raw) => {
+        const email = String(raw || "").trim().toLowerCase();
+        if (!email) return;
+        if (!EMAIL_RE.test(email)) { toast("error", "Not an email address", `"${email}" doesn't look like an email address.`); return; }
+        if (f.recipients.includes(email)) { setDraft(""); return; }
+        if (f.recipients.length >= 10) { toast("error", "That's enough recipients", "Keep the list to 10 addresses."); return; }
+        set("recipients", [...f.recipients, email]);
+        setDraft("");
+    };
+    const removeRecipient = (email) => set("recipients", f.recipients.filter((e) => e !== email));
+
+    const dirty = JSON.stringify(f) !== JSON.stringify({
+        enabled: cfg.enabled, time: cfg.time, recipients: cfg.recipients,
+        attachPdf: cfg.attachPdf, includeBookingList: cfg.includeBookingList, includeTomorrow: cfg.includeTomorrow,
+    });
+    const canEnable = f.recipients.length > 0 && cfg.mailConfigured;
+
+    const confirmSave = () => ask({
+        title: f.enabled ? "Switch on the daily report?" : cfg.enabled ? "Switch off the daily report?" : "Save daily report settings?",
+        body: f.enabled
+            ? `Every day at ${formatTime(f.time)}, the day's bookings will be emailed to ${f.recipients.join(", ")}${f.attachPdf ? ", with the full booking sheet attached as a PDF" : ""}. If today's ${formatTime(f.time)} has already passed, the first report goes out within a minute of saving.`
+            : cfg.enabled
+                ? "No more daily reports will be sent until it is switched on again. Everything stays available under Reports."
+                : "The schedule and recipients are saved, but nothing is sent until the report is switched on.",
+        label: f.enabled ? "Switch on" : "Save",
+        action: run(() => patch("/api/config/daily-report", f), "Daily report saved",
+            f.enabled ? `Delivered every day at ${formatTime(f.time)}.` : "Settings updated.",
+            async () => { await pull(); await onChanged?.(); }),
+    });
+
+    const confirmSendNow = () => ask({
+        title: "Send today's report now?",
+        body: `Today's report — as it stands right now — is emailed immediately to ${f.recipients.join(", ")}. It counts as today's delivery, so the scheduled ${formatTime(cfg.time)} report will not be sent again today.${dirty ? " Unsaved changes to recipients are NOT used; save first if you meant them." : ""}`,
+        label: "Send now",
+        action: run(() => post("/api/config/daily-report/send", {}), "Report sent", `Today's report is on its way to ${cfg.recipients.length} address${cfg.recipients.length === 1 ? "" : "es"}.`, pull),
+    });
+
+    const confirmTest = () => {
+        const to = testTo.trim().toLowerCase() || user.email;
+        if (!EMAIL_RE.test(to || "")) { toast("error", "Enter an email address", "Where should the test go?"); return; }
+        ask({
+            title: `Send a test to ${to}?`,
+            body: "A real report for today is generated and sent to that one address only. It doesn't count as today's delivery, and the schedule is unaffected.",
+            label: "Send test",
+            action: run(() => post("/api/config/daily-report/send", { to }), "Test sent", `Check ${to} in a moment.`, async () => { }),
+        });
+    };
+
+    const openPreview = async (date = previewDate) => {
+        setPreviewBusy(true);
+        try { setPreview(await get(`/api/config/daily-report/preview?date=${date}`)); }
+        catch (e) { toast("error", "Couldn't build the preview", e.message); }
+        finally { setPreviewBusy(false); }
+    };
+    const downloadPdf = async () => {
+        setPdfBusy(true);
+        try { await downloadFromApi(`/api/config/daily-report/preview.pdf?date=${previewDate}`, `daily-report-${previewDate}.pdf`); toast("success", "PDF downloaded", "Exactly what gets attached to the email."); }
+        catch (e) { toast("error", "Couldn't build the PDF", e.message); }
+        finally { setPdfBusy(false); }
+    };
+
+    return (
+        <section id="sec-dailyreport" className="card card-pad sec-anchor">
+            <div className="row-between wrap" style={{ marginBottom: 2 }}>
+                <h2 style={{ fontSize: 16 }}>Daily report by email</h2>
+                <span className={`badge ${cfg.enabled ? "badge-green" : "badge-gray"}`}>{cfg.enabled ? `On · every day at ${formatTime(cfg.time)}` : "Off"}</span>
+            </div>
+            <p className="why">
+                A formal summary of the day&apos;s bookings — meals per service and option, what was collected at the counter, anything taken after the cutoff,
+                cancellations and tomorrow&apos;s outlook — emailed at a time you choose, with the complete booking sheet attached as a PDF.
+            </p>
+
+            {!cfg.mailConfigured && (
+                <div className="banner banner-warn" style={{ marginBottom: 14 }}>
+                    Email isn&apos;t set up on this server yet, so the report can&apos;t be delivered. Ask whoever runs the server to add the mail credentials.
+                </div>
+            )}
+            {cfg.lastError && (
+                <div className="banner banner-danger" style={{ marginBottom: 14 }}>
+                    <strong>The last delivery failed</strong> ({fmtDateTime(cfg.lastError.at)}, attempt {cfg.lastError.attempts}): {cfg.lastError.message}
+                    {cfg.lastError.attempts >= 3 ? " No more retries today — fix the cause and use “Send now”." : " It will be retried shortly."}
+                </div>
+            )}
+            {cfg.lastSent && (
+                <div className="banner banner-info" style={{ marginBottom: 14 }}>
+                    Last sent {fmtDateTime(cfg.lastSent.at)} IST for {formatDate(cfg.lastSent.date, { year: true })} to {cfg.lastSent.to.join(", ")}.
+                </div>
+            )}
+
+            <div className="grid grid-2" style={{ marginBottom: 4 }}>
+                <Field label="Delivery time" hint="In the business's own timezone. Pick a time after the last service so every counter scan is in — or early morning for a preparation view of the day.">
+                    <ClockTimeInput value={f.time} onChange={(v) => set("time", v || "21:00")} disabled={!canEdit} ariaLabel="Delivery time" />
+                </Field>
+                <Field label="Report contents">
+                    <div className="stack-sm">
+                        <Check label="Attach the full booking sheet as a PDF" disabled={!canEdit} checked={f.attachPdf} onChange={(e) => set("attachPdf", e.target.checked)} />
+                        <Check label="List every booking in the PDF (customer, mobile, outlet, quantities, collection)" disabled={!canEdit || !f.attachPdf} checked={f.includeBookingList} onChange={(e) => set("includeBookingList", e.target.checked)} />
+                        <Check label="Include tomorrow's confirmed bookings as an outlook" disabled={!canEdit} checked={f.includeTomorrow} onChange={(e) => set("includeTomorrow", e.target.checked)} />
+                    </div>
+                </Field>
+            </div>
+
+            <Field label="Recipients" hint="Up to 10 addresses — yourself, the kitchen lead, accounts. Press Enter or Add after each one.">
+                <div className="chip-list" style={{ marginBottom: f.recipients.length ? 8 : 0 }}>
+                    {f.recipients.map((e) => (
+                        <span key={e} className="chip">
+                            {e}
+                            {canEdit && <button type="button" aria-label={`Remove ${e}`} onClick={() => removeRecipient(e)}>×</button>}
+                        </span>
+                    ))}
+                </div>
+                {canEdit && (
+                    <div className="row wrap" style={{ gap: 8 }}>
+                        <Input type="email" placeholder={user.email ? `e.g. ${user.email}` : "name@example.com"} value={draft} style={{ maxWidth: 320 }}
+                            onChange={(e) => setDraft(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === "Enter" || e.key === ",") { e.preventDefault(); addRecipient(draft); } }} />
+                        <button type="button" className="btn btn-secondary btn-sm" onClick={() => addRecipient(draft)} disabled={!draft.trim()}>+ Add</button>
+                        {user.email && !f.recipients.includes(user.email.toLowerCase()) && (
+                            <button type="button" className="btn btn-ghost btn-sm" onClick={() => addRecipient(user.email)}>Add me ({user.email})</button>
+                        )}
+                    </div>
+                )}
+            </Field>
+
+            <div style={{ marginBottom: 14 }}>
+                <Check label="Send the daily report" disabled={!canEdit || (!f.enabled && !canEnable)} checked={f.enabled} onChange={(e) => set("enabled", e.target.checked)} />
+                {!f.enabled && !canEnable && canEdit && (
+                    <p className="xsmall faint" style={{ marginTop: 4, marginLeft: 26 }}>
+                        {!cfg.mailConfigured ? "Needs email to be set up on the server first." : "Add at least one recipient to switch it on."}
+                    </p>
+                )}
+            </div>
+
+            {canEdit && (
+                <div className="row wrap" style={{ gap: 8 }}>
+                    <button className="btn btn-primary" onClick={confirmSave} disabled={!dirty}>Save daily report…</button>
+                    <button className="btn btn-secondary" onClick={confirmSendNow} disabled={!cfg.recipients.length || !cfg.mailConfigured}>Send today&apos;s report now…</button>
+                </div>
+            )}
+
+            <hr className="divider" />
+            <div className="row-between wrap" style={{ gap: 10 }}>
+                <div>
+                    <strong style={{ fontSize: 14 }}>See it before it goes out</strong>
+                    <p className="small muted" style={{ margin: "2px 0 0" }}>The email and the PDF, built from real bookings for any day.</p>
+                </div>
+                <div className="row wrap" style={{ gap: 8 }}>
+                    <Input type="date" value={previewDate} max={shiftDate(todayKey(), 60)} style={{ width: 160 }} onChange={(e) => e.target.value && setPreviewDate(e.target.value)} />
+                    <button className="btn btn-secondary btn-sm" onClick={() => openPreview()} disabled={previewBusy}>{previewBusy ? "Building…" : "Preview email"}</button>
+                    <button className="btn btn-secondary btn-sm" onClick={downloadPdf} disabled={pdfBusy}>{pdfBusy ? "Building…" : "Download PDF"}</button>
+                </div>
+            </div>
+            {canEdit && cfg.mailConfigured && (
+                <div className="row wrap" style={{ gap: 8, marginTop: 12 }}>
+                    <Input type="email" placeholder={user.email || "Send a test to…"} value={testTo} style={{ maxWidth: 300 }} onChange={(e) => setTestTo(e.target.value)} />
+                    <button className="btn btn-ghost btn-sm" onClick={confirmTest}>Send a test email…</button>
+                </div>
+            )}
+
+            <Drawer open={Boolean(preview)} onClose={() => setPreview(null)} wide
+                title={preview ? `Preview — ${preview.dateLabel}` : "Preview"}
+                footer={preview && (
+                    <>
+                        <span className="xsmall faint grow">Subject: {preview.subject}{preview.pdfName ? ` · Attachment: ${preview.pdfName}` : ""}</span>
+                        <button className="btn btn-secondary" onClick={() => setPreview(null)}>Close</button>
+                    </>
+                )}>
+                {preview && (
+                    <iframe title="Daily report preview" srcDoc={preview.html} sandbox=""
+                        style={{ width: "100%", height: "72vh", border: "1px solid var(--border)", borderRadius: 10, background: "#f6f7f5" }} />
+                )}
+            </Drawer>
         </section>
     );
 }

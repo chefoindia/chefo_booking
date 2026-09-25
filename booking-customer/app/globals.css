@@ -1,38 +1,49 @@
-/* globals.css — the customer booking page, in the Chefo design system.
+/* globals.css — the customer booking app.
  *
- * A different job from the operator dashboard: this is used once, on a phone,
- * often by someone who has never seen it before and will not see it again for
- * a week. So it is single-column, large-target, and says out loud what is
- * going to happen — particularly whether a booking will be confirmed on the
- * spot or needs the canteen's approval. */
+ * Used once a day, on a phone, often in a queue. So: one column, big targets,
+ * a warm paper background that reads well in daylight, one strong brand green
+ * for anything you can press, and the booking deadline said out loud wherever
+ * a meal is shown. Everything is a token so the operator dashboard and this
+ * app can drift apart in layout without drifting apart in identity. */
 
 :root {
-  --ink: #1c2520;
-  --slate: #5b6660;
-  --faint: #8a948e;
-  --paper: #f6f7f5;
+  --ink: #17201b;
+  --slate: #5a6560;
+  --faint: #8b948f;
+  --paper: #f4f1ea;
+  --paper-2: #ece8df;
   --card: #ffffff;
-  --border: #e3e7e1;
-  --border-strong: #cdd4cf;
+  --border: #e6e2d8;
+  --border-strong: #cfc9bc;
 
-  --basil: #206e4e;
-  --basil-dark: #185a40;
-  --basil-soft: #e9f3ee;
-  --turmeric: #9a6b15;
-  --turmeric-soft: #f8f0df;
-  --brick: #ae3b32;
-  --brick-soft: #f9ecea;
+  --basil: #1f6f4f;
+  --basil-dark: #14563d;
+  --basil-deep: #0f3d2b;
+  --basil-soft: #e4f1ea;
+  --basil-line: #bfdccc;
+  --mint: #9fd4b6;
+
+  --saffron: #d9741f;
+  --saffron-soft: #fcefe3;
+  --turmeric: #a86b12;
+  --turmeric-soft: #fbf1dc;
+  --brick: #b8382f;
+  --brick-soft: #fbebe8;
 
   --app-max-w: 520px;
-  --topbar-h: 58px;
-  --tabbar-h: 58px;
+  --topbar-h: 60px;
+  --tabbar-h: 66px;
   --safe-t: env(safe-area-inset-top, 0px);
   --safe-b: env(safe-area-inset-bottom, 0px);
 
-  --radius: 12px;
-  --radius-sm: 10px;
-  --shadow: 0 1px 2px rgba(28, 37, 32, 0.05);
+  --radius-xl: 22px;
+  --radius: 18px;
+  --radius-sm: 13px;
+  --radius-xs: 9px;
+  --shadow: 0 1px 2px rgba(23, 32, 27, 0.04), 0 6px 20px -12px rgba(23, 32, 27, 0.18);
+  --shadow-lift: 0 10px 30px -12px rgba(23, 32, 27, 0.28);
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --spring: cubic-bezier(0.2, 0.9, 0.3, 1.15);
 }
 
 * { box-sizing: border-box; }
@@ -45,34 +56,20 @@ html, body {
   font-size: 15px;
   line-height: 1.5;
   -webkit-tap-highlight-color: transparent;
+  -webkit-font-smoothing: antialiased;
 }
 
-h1, h2, h3 { margin: 0; font-family: var(--font-display), var(--font-body), sans-serif; font-weight: 700; letter-spacing: -0.01em; }
+h1, h2, h3 { margin: 0; font-family: var(--font-display), var(--font-body), sans-serif; font-weight: 700; letter-spacing: -0.015em; }
 p { margin: 0; }
 a { color: inherit; }
 button { font-family: inherit; }
 input, select, textarea { font-family: inherit; }
+::selection { background: var(--mint); color: var(--basil-deep); }
 
-/* Single column, thumb-reachable, never wider than comfortable to read. */
-.wrap { max-width: 520px; margin: 0 auto; padding: 16px 16px 40px; }
-
-.head { display: flex; align-items: center; gap: 12px; padding: 18px 0 14px; }
-.head-mark {
-  width: 42px; height: 42px; border-radius: 12px; background: var(--card);
-  border: 1px solid var(--border); box-shadow: var(--shadow);
-  color: var(--basil); display: grid; place-items: center; font-family: var(--font-display), sans-serif;
-  font-weight: 700; font-size: 18px; flex-shrink: 0; overflow: hidden; text-decoration: none;
-}
-.head-mark img { width: 100%; height: 100%; object-fit: cover; }
-.head-name { font-family: var(--font-display), sans-serif; font-size: 17px; font-weight: 700; }
-.head-sub { font-size: 12.5px; color: var(--faint); }
-
-.card {
-  background: var(--card); border: 1px solid var(--border);
-  border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px; margin-bottom: 12px;
-}
+/* ------------------------------------------------------------ utilities */
+.wrap { max-width: var(--app-max-w); margin: 0 auto; padding: 16px 16px 40px; }
 .stack { display: flex; flex-direction: column; gap: 12px; }
-.stack-sm { display: flex; flex-direction: column; gap: 8px; }
+.stack-sm { display: flex; flex-direction: column; gap: 9px; }
 .row { display: flex; align-items: center; gap: 8px; }
 .row-between { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .muted { color: var(--slate); }
@@ -81,303 +78,402 @@ input, select, textarea { font-family: inherit; }
 .xsmall { font-size: 12px; }
 .mono { font-family: var(--font-mono), monospace; }
 .center { text-align: center; }
+.grow { flex: 1; min-width: 0; }
+.tabular { font-variant-numeric: tabular-nums; }
 
-.label { font-size: 13px; font-weight: 600; color: var(--ink); margin-bottom: 6px; display: block; }
-.hint { font-size: 12px; color: var(--faint); margin-top: 5px; display: block; }
+.label { font-size: 12.5px; font-weight: 700; color: var(--slate); margin-bottom: 6px; display: block; letter-spacing: .01em; }
+.hint { font-size: 12px; color: var(--faint); margin-top: 6px; display: block; line-height: 1.45; }
 
-.input, .select, .textarea {
-  width: 100%; padding: 12px 13px;      /* generous: typed with a thumb */
-  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
-  background: var(--card); color: var(--ink); font: inherit; font-size: 15px; outline: none;
-  transition: border-color 120ms var(--ease), box-shadow 120ms var(--ease);
-}
-.input:focus, .select:focus, .textarea:focus {
-  border-color: var(--basil); box-shadow: 0 0 0 3px var(--basil-soft);
-}
-.textarea { resize: vertical; min-height: 62px; }
-
-.btn {
-  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
-  padding: 13px 18px; border-radius: var(--radius-sm);
-  border: 1px solid var(--border-strong); background: var(--card);
-  font: inherit; font-weight: 600; font-size: 15px; color: var(--ink);
-  cursor: pointer; width: 100%; text-decoration: none;
-  transition: background 120ms var(--ease), transform 120ms var(--ease);
-}
-.btn:active:not(:disabled) { transform: scale(0.985); }
-.btn:disabled { opacity: .55; cursor: not-allowed; }
-.btn-primary { background: var(--basil); border-color: var(--basil); color: #fff; }
-.btn-primary:hover:not(:disabled) { background: var(--basil-dark); }
-.btn-ghost { background: transparent; border-color: transparent; color: var(--slate); }
-.btn-sm { padding: 8px 13px; font-size: 13.5px; width: auto; border-radius: 8px; }
-.btn-row { display: flex; gap: 8px; }
-
-/* ---------- meal picker ---------- */
-.meal-list { display: flex; flex-direction: column; gap: 9px; }
-.meal-opt {
-  display: flex; align-items: center; justify-content: space-between; gap: 10px;
-  border: 1.5px solid var(--border); border-radius: var(--radius);
-  padding: 13px 14px; cursor: pointer; background: var(--card); text-align: left;
-  font: inherit; width: 100%; color: inherit;
-  transition: border-color 120ms var(--ease), background-color 120ms var(--ease);
-}
-.meal-opt.on { border-color: var(--basil); background: var(--basil-soft); box-shadow: 0 0 0 3px rgba(32,110,78,.10); }
-.meal-opt:disabled { opacity: .5; cursor: not-allowed; }
-.meal-opt-name { font-family: var(--font-display), sans-serif; font-weight: 700; }
-
-/* ---------- quantity stepper ---------- */
-.qty-row {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  padding: 11px 0; border-bottom: 1px solid var(--border);
-}
-.qty-row:last-child { border-bottom: none; }
-.qty-name { font-weight: 600; }
-.qty-ctrl { display: flex; align-items: center; gap: 9px; }
-.qty-btn {
-  width: 38px; height: 38px; border-radius: 10px;
-  border: 1px solid var(--border-strong); background: var(--card);
-  font-size: 19px; font-weight: 700; cursor: pointer; color: var(--ink);
-  display: grid; place-items: center; flex-shrink: 0;
-}
-.qty-btn:disabled { opacity: .35; cursor: not-allowed; }
-.qty-num {
-  width: 52px; text-align: center; font-size: 17px; font-weight: 700;
-  font-family: var(--font-display), sans-serif; font-variant-numeric: tabular-nums;
-  border: 1px solid var(--border-strong); border-radius: 9px; padding: 7px 0;
-  color: inherit; background: var(--card);
-}
-
-.total-bar {
-  display: flex; align-items: center; justify-content: space-between;
-  padding-top: 12px; margin-top: 4px; border-top: 1.5px solid var(--border);
-  font-family: var(--font-display), sans-serif; font-weight: 700; font-size: 16px;
-}
-
-/* ---------- notices ---------- */
-.notice { padding: 12px 14px; border-radius: var(--radius-sm); font-size: 13.5px; border: 1px solid var(--border); line-height: 1.5; }
-.notice-warn { background: var(--turmeric-soft); border-color: #ecdcb6; color: #6b4d12; }
-.notice-ok { background: var(--basil-soft); border-color: #c7e2d3; color: var(--basil-dark); }
-.notice-bad { background: var(--brick-soft); border-color: #f0c9be; color: var(--brick); }
-
-.badge {
-  display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 999px;
-  font-size: 12px; font-weight: 600; white-space: nowrap;
-}
-.badge-green { background: var(--basil-soft); color: var(--basil-dark); }
-.badge-amber { background: var(--turmeric-soft); color: var(--turmeric); }
-.badge-red { background: var(--brick-soft); color: var(--brick); }
-.badge-gray { background: var(--paper); color: var(--slate); border: 1px solid var(--border); }
-
-/* ---------- confirmation ---------- */
-.done-mark {
-  width: 60px; height: 60px; border-radius: 50%; margin: 0 auto 14px;
-  display: grid; place-items: center; font-size: 28px; font-weight: 700;
-}
-.done-ok { background: var(--basil-soft); color: var(--basil-dark); }
-.done-wait { background: var(--turmeric-soft); color: var(--turmeric); }
-.ref {
-  font-family: var(--font-mono), monospace; font-size: 19px; font-weight: 600;
-  letter-spacing: .04em; padding: 9px 14px; border-radius: 10px;
-  background: var(--paper); border: 1px solid var(--border); display: inline-block; margin-top: 6px;
-}
-
-.sk {
-  display: block; position: relative; overflow: hidden;
-  background: #eceee9; border-radius: 9px;
-}
-.sk::after {
-  content: ""; position: absolute; inset: 0; transform: translateX(-100%);
-  background: linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.62) 50%, rgba(255,255,255,0) 100%);
-  animation: sk-sweep 1.25s var(--ease) infinite;
-}
-@keyframes sk-sweep { to { transform: translateX(100%); } }
-
-.link { background: none; border: none; padding: 0; font: inherit; font-weight: 600;
-  color: var(--basil-dark); text-decoration: underline; cursor: pointer; }
-
-.powered { text-align: center; font-size: 12px; color: var(--faint); margin-top: 22px; }
-.powered strong { color: var(--slate); font-family: var(--font-display), sans-serif; }
-
-
-/* ---------------------------------------------------------------- app shell
- * Four tabs in a fixed bar, a canteen name that never scrolls away, and one
- * column of content between them. On a phone it fills the screen; on a desktop
- * it stays phone-width and centred, because that is the shape it was designed
- * for and stretching it to 1400px helps nobody.
- *
- * Everything is inset for the notch and the home indicator via the safe-area
- * variables — a Book button hidden behind an iPhone's home bar is a button
- * that does not exist. */
-.app-shell {
-  max-width: var(--app-max-w); margin: 0 auto; min-height: 100dvh;
-  background: var(--paper); position: relative;
-  display: flex; flex-direction: column;
-}
-.app-topbar {
-  position: sticky; top: 0; z-index: 40;
-  min-height: calc(var(--topbar-h) + var(--safe-t));
-  padding: var(--safe-t) 16px 0;
-  background: var(--card); border-bottom: 1px solid var(--border);
-  display: flex; align-items: center; gap: 11px;
-}
-.app-topbar-mark {
-  width: 34px; height: 34px; border-radius: 10px; flex-shrink: 0; overflow: hidden;
-  background: var(--basil-soft); color: var(--basil-dark);
-  display: grid; place-items: center;
-  font-family: var(--font-display), sans-serif; font-weight: 700; font-size: 15px;
-}
-.app-topbar-mark img { width: 100%; height: 100%; object-fit: cover; }
-.app-topbar-title {
-  font-family: var(--font-display), sans-serif; font-weight: 700; font-size: 16.5px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.app-topbar-sub {
-  font-size: 11.5px; color: var(--faint);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.app-content { flex: 1; padding: 14px 16px calc(var(--tabbar-h) + var(--safe-b) + 26px); }
-
-.tabbar {
-  position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
-  max-width: var(--app-max-w); margin: 0 auto;
-  height: calc(var(--tabbar-h) + var(--safe-b)); padding-bottom: var(--safe-b);
-  background: var(--card); border-top: 1px solid var(--border);
-  display: flex; box-shadow: 0 -2px 10px rgba(28, 37, 32, 0.05);
-}
-.tab-item {
-  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 3px; background: none; border: none; cursor: pointer; text-decoration: none;
-  color: var(--faint); padding: 6px 2px 0;
-}
-.tab-item .tab-label { font-size: 10.5px; font-weight: 600; }
-.tab-item.active { color: var(--basil); }
-
-@media (min-width: 540px) {
-  body { display: flex; justify-content: center; background: #eef1ee; }
-  .app-shell { box-shadow: 0 0 0 1px var(--border), 0 20px 60px rgba(28, 37, 32, 0.08); }
-}
-
-/* ---------------------------------------------------------------- sections
- * A tab holds several unrelated things, so each gets a plain heading rather
- * than a card border — headings scan, nested boxes do not. */
+/* Section headings scan; nested boxes do not. */
 .sec-h {
-  font-size: 12.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
-  color: var(--faint); margin: 18px 2px 9px;
+  font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .09em;
+  color: var(--faint); margin: 20px 2px 10px;
+  display: flex; align-items: center; gap: 8px;
 }
+.sec-h::after { content: ""; flex: 1; height: 1px; background: var(--border); }
 .sec-h:first-child { margin-top: 2px; }
 
-/* A whole card that is one tap — used for a meal, a booking, a day. */
+/* ------------------------------------------------------------ cards */
+.card {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px; margin-bottom: 12px;
+}
 .card-tap {
   display: block; width: 100%; text-align: left; font: inherit; color: inherit;
   cursor: pointer; text-decoration: none;
+  transition: transform 140ms var(--ease), box-shadow 140ms var(--ease), border-color 140ms var(--ease);
 }
-.card-tap:active { transform: scale(0.995); }
+.card-tap:active { transform: scale(0.99); }
+@media (hover: hover) { .card-tap:hover { border-color: var(--border-strong); box-shadow: var(--shadow-lift); } }
 
-/* The cut-off line. Said on its own row, in its own colour, because it is the
-   one fact that decides whether a booking works or becomes a request. */
-.cut-line {
-  display: flex; align-items: flex-start; gap: 7px;
-  font-size: 12.5px; line-height: 1.45; margin-top: 7px;
+/* ------------------------------------------------------------ inputs */
+.input, .select, .textarea {
+  width: 100%; padding: 13px 14px;
+  border: 1.5px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--card); color: var(--ink); font: inherit; font-size: 15px; outline: none;
+  transition: border-color 120ms var(--ease), box-shadow 120ms var(--ease);
+  appearance: none; -webkit-appearance: none;
 }
+.select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%235a6560' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 12px center; padding-right: 38px;
+}
+.input:focus, .select:focus, .textarea:focus {
+  border-color: var(--basil); box-shadow: 0 0 0 4px rgba(31, 111, 79, 0.14);
+}
+.input::placeholder, .textarea::placeholder { color: var(--faint); }
+.textarea { resize: vertical; min-height: 64px; }
+.input-prefix {
+  display: flex; align-items: center; justify-content: center; width: 60px; flex-shrink: 0;
+  border: 1.5px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--paper);
+  font-weight: 600; color: var(--slate); font-size: 14.5px;
+}
+
+/* ------------------------------------------------------------ buttons */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 13px 18px; border-radius: var(--radius-sm);
+  border: 1.5px solid var(--border-strong); background: var(--card);
+  font: inherit; font-weight: 600; font-size: 15px; color: var(--ink);
+  cursor: pointer; width: 100%; text-decoration: none; line-height: 1.2;
+  transition: background 120ms var(--ease), transform 120ms var(--ease), border-color 120ms var(--ease), box-shadow 120ms var(--ease);
+}
+.btn:active:not(:disabled) { transform: scale(0.985); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn-primary { background: var(--basil); border-color: var(--basil); color: #fff; box-shadow: 0 8px 18px -10px rgba(31, 111, 79, 0.7); }
+.btn-primary:hover:not(:disabled) { background: var(--basil-dark); border-color: var(--basil-dark); }
+.btn-ghost { background: transparent; border-color: transparent; color: var(--slate); box-shadow: none; }
+.btn-soft { background: var(--basil-soft); border-color: var(--basil-soft); color: var(--basil-deep); }
+.btn-danger { background: var(--card); border-color: #efc4bd; color: var(--brick); }
+.btn-sm { padding: 9px 14px; font-size: 13.5px; width: auto; border-radius: 11px; }
+.btn-lg { padding: 15px 18px; font-size: 16px; border-radius: 15px; }
+.btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.btn-row .btn { width: auto; flex: 1; }
+.link {
+  background: none; border: none; padding: 0; font: inherit; font-weight: 600;
+  color: var(--basil-dark); text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
+}
+
+/* ------------------------------------------------------------ badges, chips, notices */
+.badge {
+  display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 999px;
+  font-size: 12px; font-weight: 700; white-space: nowrap; letter-spacing: .005em;
+}
+.badge-green { background: var(--basil-soft); color: var(--basil-deep); }
+.badge-amber { background: var(--turmeric-soft); color: var(--turmeric); }
+.badge-red { background: var(--brick-soft); color: var(--brick); }
+.badge-gray { background: var(--paper-2); color: var(--slate); }
+.badge-dot::before { content: ""; width: 6px; height: 6px; border-radius: 999px; background: currentColor; }
+
+.chip-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.chip {
+  border: 1.5px solid var(--border); background: var(--card); border-radius: 999px;
+  padding: 9px 15px; font: inherit; font-size: 13.5px; font-weight: 600;
+  color: var(--slate); cursor: pointer; transition: all 120ms var(--ease);
+}
+.chip.on { border-color: var(--basil); background: var(--basil); color: #fff; }
+.chip:disabled { opacity: .45; cursor: not-allowed; }
+
+.notice { padding: 12px 14px; border-radius: var(--radius-sm); font-size: 13.5px; border: 1px solid var(--border); line-height: 1.5; background: var(--card); }
+.notice-warn { background: var(--turmeric-soft); border-color: #edd9ac; color: #6b4d12; }
+.notice-ok { background: var(--basil-soft); border-color: var(--basil-line); color: var(--basil-deep); }
+.notice-bad { background: var(--brick-soft); border-color: #efc4bd; color: var(--brick); }
+
+/* The cut-off line. Its own row, its own colour — the one fact that decides
+   whether a booking works. */
+.cut-line { display: flex; align-items: flex-start; gap: 7px; font-size: 12.5px; line-height: 1.45; margin-top: 7px; font-weight: 500; }
 .cut-dot { width: 7px; height: 7px; border-radius: 999px; flex-shrink: 0; margin-top: 5px; }
-.cut-green .cut-dot { background: var(--basil); }
+.cut-green .cut-dot { background: var(--basil); box-shadow: 0 0 0 3px rgba(31,111,79,.15); }
 .cut-green { color: var(--basil-dark); }
-.cut-amber .cut-dot { background: var(--turmeric); }
+.cut-amber .cut-dot { background: var(--saffron); box-shadow: 0 0 0 3px rgba(217,116,31,.16); }
 .cut-amber { color: var(--turmeric); }
 .cut-red   .cut-dot { background: var(--brick); }
 .cut-red   { color: var(--brick); }
 .cut-gray  .cut-dot { background: var(--faint); }
 .cut-gray  { color: var(--faint); }
 
-.chip-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-.chip {
-  border: 1.5px solid var(--border); background: var(--card); border-radius: 999px;
-  padding: 8px 14px; font: inherit; font-size: 13.5px; font-weight: 600;
-  color: var(--slate); cursor: pointer;
+/* ------------------------------------------------------------ skeleton */
+.sk { display: block; position: relative; overflow: hidden; background: var(--paper-2); border-radius: var(--radius-sm); }
+.sk::after {
+  content: ""; position: absolute; inset: 0; transform: translateX(-100%);
+  background: linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.7) 50%, rgba(255,255,255,0) 100%);
+  animation: sk-sweep 1.25s var(--ease) infinite;
 }
-.chip.on { border-color: var(--basil); background: var(--basil-soft); color: var(--basil-dark); }
-.chip:disabled { opacity: .45; cursor: not-allowed; }
+@keyframes sk-sweep { to { transform: translateX(100%); } }
 
-/* The day's dishes, read as one sentence. A bulleted list of six items made
-   a four-row form scroll for a page, which is why this is prose. */
-.dish-line { font-size: 12.5px; color: var(--slate); line-height: 1.45; margin-top: 2px; }
-.price-tag {
-  font-size: 12px; font-weight: 600; color: var(--basil-dark);
-  background: var(--basil-soft); border-radius: 999px; padding: 2px 8px;
+.powered { text-align: center; font-size: 12px; color: var(--faint); margin-top: 26px; }
+.powered strong { color: var(--slate); font-family: var(--font-display), sans-serif; }
+
+/* ================================================================ app shell
+ * A compact bar that never scrolls away, one column, and a bottom bar with a
+ * raised Book button in the middle — the one action this app exists for is
+ * never more than a thumb away, on any tab. */
+.app-shell {
+  max-width: var(--app-max-w); margin: 0 auto; min-height: 100dvh;
+  background: var(--paper); position: relative; display: flex; flex-direction: column;
 }
-.btn-lg { padding: 15px 18px; font-size: 16px; }
+.app-topbar {
+  position: sticky; top: 0; z-index: 40;
+  min-height: calc(var(--topbar-h) + var(--safe-t)); padding: var(--safe-t) 16px 0;
+  background: rgba(244, 241, 234, 0.86); backdrop-filter: saturate(160%) blur(12px); -webkit-backdrop-filter: saturate(160%) blur(12px);
+  border-bottom: 1px solid rgba(230, 226, 216, 0.9);
+  display: flex; align-items: center; gap: 11px;
+}
+.app-topbar-mark {
+  width: 38px; height: 38px; border-radius: 12px; flex-shrink: 0; overflow: hidden;
+  background: linear-gradient(140deg, var(--basil) 0%, var(--basil-deep) 100%); color: #fff;
+  display: grid; place-items: center; font-family: var(--font-display), sans-serif; font-weight: 700; font-size: 16px;
+  box-shadow: 0 6px 14px -8px rgba(15, 61, 43, 0.7);
+}
+.app-topbar-mark img { width: 100%; height: 100%; object-fit: cover; }
+.app-topbar-title { font-family: var(--font-display), sans-serif; font-weight: 700; font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.app-topbar-sub { font-size: 11.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.app-topbar-pill {
+  flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px;
+  font-size: 11.5px; font-weight: 700; background: var(--card); border: 1px solid var(--border); color: var(--slate);
+}
+.app-content { flex: 1; padding: 14px 16px calc(var(--tabbar-h) + var(--safe-b) + 28px); }
 
-/* ---------------------------------------------------------- meal picker
- * A meal is a ROW, not a card: name on the left, when it shuts under it, a tick
- * when chosen. Nothing else fits on a phone without pushing the next decision
- * off the screen. Lives here rather than in the sheet because the same rows are
- * used wherever a meal is chosen. */
-.pick-list { margin-top: 12px; border-top: 1px solid var(--border); }
+.tabbar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
+  max-width: var(--app-max-w); margin: 0 auto;
+  height: calc(var(--tabbar-h) + var(--safe-b)); padding-bottom: var(--safe-b);
+  background: rgba(255, 255, 255, 0.94); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  border-top: 1px solid var(--border);
+  display: flex; align-items: stretch; box-shadow: 0 -8px 24px -18px rgba(23, 32, 27, 0.35);
+}
+.tab-item {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 4px; background: none; border: none; cursor: pointer; text-decoration: none;
+  color: var(--faint); padding: 6px 2px 0; position: relative; transition: color 120ms var(--ease);
+}
+.tab-item .tab-label { font-size: 10.5px; font-weight: 700; letter-spacing: .02em; }
+.tab-item.active { color: var(--basil-dark); }
+.tab-item.active::before {
+  content: ""; position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+  width: 26px; height: 3px; border-radius: 0 0 4px 4px; background: var(--basil);
+}
+.tab-book { flex: 0 0 84px; display: flex; align-items: center; justify-content: center; }
+.tab-book-btn {
+  width: 58px; height: 58px; border-radius: 999px; margin-top: -22px;
+  background: linear-gradient(150deg, var(--basil) 0%, var(--basil-deep) 100%); color: #fff;
+  border: 4px solid var(--paper); box-shadow: 0 12px 24px -10px rgba(15, 61, 43, 0.75);
+  display: grid; place-items: center; cursor: pointer; transition: transform 160ms var(--spring);
+}
+.tab-book-btn:active { transform: scale(0.94); }
+.tab-book-label { position: absolute; bottom: 8px; font-size: 10.5px; font-weight: 700; color: var(--basil-dark); }
+
+@media (min-width: 540px) {
+  body { display: flex; justify-content: center; background: #e9e5db; }
+  .app-shell { box-shadow: 0 0 0 1px var(--border), 0 30px 80px -30px rgba(23, 32, 27, 0.35); }
+}
+
+/* ================================================================ hero
+ * The first thing on Home: the day, whether you can still book, and one
+ * button. Deep green so it reads as "the canteen", not as another card. */
+.hero {
+  position: relative; overflow: hidden; border-radius: var(--radius-xl);
+  background: radial-gradient(120% 90% at 100% 0%, #2b8a63 0%, var(--basil) 40%, var(--basil-deep) 100%);
+  color: #fff; padding: 20px 18px 18px; margin-bottom: 14px;
+  box-shadow: 0 18px 40px -22px rgba(15, 61, 43, 0.9);
+}
+.hero::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(circle at 18% 120%, rgba(255,255,255,.14) 0 22%, transparent 23%),
+              radial-gradient(circle at 88% 18%, rgba(255,255,255,.10) 0 16%, transparent 17%);
+}
+.hero > * { position: relative; z-index: 1; }
+.hero-kicker { font-size: 11.5px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; opacity: .78; }
+.hero h1 { font-size: 24px; line-height: 1.18; margin-top: 6px; letter-spacing: -0.02em; }
+.hero p { margin-top: 8px; font-size: 13.5px; line-height: 1.55; opacity: .9; max-width: 34ch; }
+.hero .btn { margin-top: 16px; background: #fff; border-color: #fff; color: var(--basil-deep); box-shadow: 0 10px 24px -12px rgba(0,0,0,.5); }
+.hero .btn:hover:not(:disabled) { background: #f2fbf6; }
+.hero-stats { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+.hero-stat {
+  display: inline-flex; align-items: center; gap: 6px; padding: 7px 11px; border-radius: 999px;
+  background: rgba(255,255,255,.14); border: 1px solid rgba(255,255,255,.18); font-size: 12.5px; font-weight: 600;
+}
+.hero-stat b { font-family: var(--font-display), sans-serif; font-size: 14px; }
+
+/* ================================================================ meal cards
+ * Name, when it is served, a rail in the meal's own colour, and the deadline
+ * in words. A closed meal keeps its card but loses its press. */
+.meal-card {
+  position: relative; display: flex; gap: 12px; align-items: stretch;
+  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 14px 14px 14px 16px; margin-bottom: 10px; box-shadow: var(--shadow); overflow: hidden;
+}
+.meal-card::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 5px; background: var(--rail, var(--basil)); }
+.meal-card.is-closed { opacity: .72; }
+.meal-card.is-closed::before { background: var(--faint); }
+.meal-name { font-family: var(--font-display), sans-serif; font-weight: 700; font-size: 16px; letter-spacing: -0.01em; }
+.meal-time { font-size: 12.5px; color: var(--slate); margin-top: 1px; }
+.meal-dishes { font-size: 12.5px; color: var(--slate); line-height: 1.45; margin-top: 7px; }
+.meal-arrow { align-self: center; color: var(--faint); flex-shrink: 0; }
+.rail-1 { --rail: #d9741f; } .rail-2 { --rail: #1f6f4f; } .rail-3 { --rail: #b8862a; } .rail-4 { --rail: #3c6fb1; } .rail-5 { --rail: #8c4fb0; }
+
+/* ================================================================ day strip
+ * The next week as pills — the day you are actually going to pick is nearly
+ * always in the next seven, and a whole calendar for that is a wall. */
+.day-strip { display: flex; gap: 8px; overflow-x: auto; padding: 4px 2px 8px; scrollbar-width: none; -webkit-overflow-scrolling: touch; scroll-snap-type: x proximity; }
+.day-strip::-webkit-scrollbar { display: none; }
+.day-pill {
+  flex: 0 0 auto; width: 56px; padding: 9px 0 8px; scroll-snap-align: start;
+  border: 1.5px solid var(--border); border-radius: 15px; background: var(--card);
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  font: inherit; color: var(--slate); cursor: pointer; position: relative;
+  transition: all 140ms var(--ease);
+}
+.day-pill .day-dow { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+.day-pill .day-n { font-family: var(--font-display), sans-serif; font-weight: 700; font-size: 17px; font-variant-numeric: tabular-nums; color: var(--ink); }
+.day-pill .day-dot { width: 5px; height: 5px; border-radius: 999px; background: transparent; margin-top: 1px; }
+.day-pill .day-dot.on { background: var(--basil); }
+.day-pill.is-today { border-color: var(--basil-line); background: var(--basil-soft); }
+.day-pill.on { border-color: var(--basil); background: var(--basil); color: rgba(255,255,255,.85); box-shadow: 0 10px 20px -12px rgba(15,61,43,.8); }
+.day-pill.on .day-n { color: #fff; }
+.day-pill.on .day-dot.on { background: #fff; }
+.day-pill:disabled { opacity: .4; cursor: not-allowed; }
+.day-pill.is-out .day-n { text-decoration: line-through; color: var(--faint); }
+
+/* ================================================================ pick list (meals inside the sheet) */
+.pick-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
 .pick {
-  display: flex; align-items: center; justify-content: space-between; gap: 10px;
-  width: 100%; padding: 12px 2px; background: none; border: none;
-  border-bottom: 1px solid var(--border);
-  font: inherit; color: inherit; text-align: left; cursor: pointer;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  width: 100%; padding: 12px 14px; background: var(--card); border: 1.5px solid var(--border); border-radius: var(--radius-sm);
+  font: inherit; color: inherit; text-align: left; cursor: pointer; transition: all 140ms var(--ease);
 }
-.pick:disabled { opacity: .45; cursor: not-allowed; }
-.pick-main { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
-.pick-name { font-weight: 600; font-size: 15px; }
-.pick-when { font-size: 12px; }
+.pick:disabled { opacity: .5; cursor: not-allowed; }
+.pick.on { border-color: var(--basil); background: var(--basil-soft); box-shadow: 0 0 0 3px rgba(31,111,79,.12); }
+.pick-main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.pick-name { font-family: var(--font-display), sans-serif; font-weight: 700; font-size: 15px; }
+.pick-when { font-size: 12px; font-weight: 600; }
 .pick-tick {
-  width: 24px; height: 24px; border-radius: 999px; flex-shrink: 0;
-  display: grid; place-items: center; font-size: 13px; font-weight: 700;
-  border: 1.5px solid var(--border-strong); color: transparent;
+  width: 26px; height: 26px; border-radius: 999px; flex-shrink: 0; display: grid; place-items: center;
+  border: 1.5px solid var(--border-strong); color: transparent; transition: all 140ms var(--ease);
 }
 .pick.on .pick-tick { background: var(--basil); border-color: var(--basil); color: #fff; }
-.pick.on .pick-name { color: var(--basil-dark); }
 
-/* ------------------------------------------------------- bottom sheet
- * Ported from the Chefo customer app. Anything that would be a dialog slides
- * up from the bottom: the screen behind stays visible so nobody loses their
- * place, and the controls stay under a thumb. */
-.sheet-overlay {
-  position: fixed; inset: 0; z-index: 70;
-  background: rgba(28, 37, 32, 0.45); animation: fadeIn 160ms ease;
+/* ================================================================ quantity */
+.qty-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.qty-row:last-of-type { border-bottom: none; }
+.qty-name { font-weight: 700; font-size: 15px; }
+.qty-ctrl { display: flex; align-items: center; gap: 0; background: var(--paper); border-radius: 999px; padding: 3px; border: 1px solid var(--border); }
+.qty-btn {
+  width: 36px; height: 36px; border-radius: 999px; border: none; background: var(--card);
+  font-size: 20px; font-weight: 700; cursor: pointer; color: var(--basil-dark);
+  display: grid; place-items: center; flex-shrink: 0; box-shadow: 0 1px 2px rgba(0,0,0,.06);
+  transition: transform 120ms var(--spring), opacity 120ms;
 }
+.qty-btn:active:not(:disabled) { transform: scale(0.9); }
+.qty-btn:disabled { opacity: .35; cursor: not-allowed; box-shadow: none; background: transparent; }
+.qty-num {
+  width: 44px; text-align: center; font-size: 16px; font-weight: 700; font-family: var(--font-display), sans-serif;
+  font-variant-numeric: tabular-nums; border: none; background: transparent; padding: 0; color: var(--ink); outline: none;
+}
+.dish-line { font-size: 12.5px; color: var(--slate); line-height: 1.45; margin-top: 3px; }
+.price-tag { font-size: 12px; font-weight: 700; color: var(--basil-deep); background: var(--basil-soft); border-radius: 999px; padding: 2px 9px; }
+.total-bar {
+  display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; margin-top: 8px;
+  border-radius: var(--radius-sm); background: var(--paper); font-family: var(--font-display), sans-serif; font-weight: 700; font-size: 15px;
+}
+
+/* ================================================================ steps inside the sheet */
+.step { margin-top: 18px; }
+.step:first-child { margin-top: 0; }
+.step-h { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; }
+.step-n {
+  width: 24px; height: 24px; border-radius: 999px; flex-shrink: 0; display: grid; place-items: center;
+  background: var(--ink); color: #fff; font-size: 12px; font-weight: 700; font-family: var(--font-display), sans-serif;
+}
+.step-h h3 { font-size: 15px; }
+.step-h .step-sub { font-size: 12px; color: var(--faint); margin-left: auto; font-weight: 600; }
+
+.seg { display: flex; gap: 6px; padding: 4px; background: var(--paper); border-radius: 999px; border: 1px solid var(--border); }
+.seg button {
+  flex: 1; padding: 9px 8px; border-radius: 999px; border: none; background: transparent; font: inherit; font-size: 13.5px; font-weight: 600; color: var(--slate); cursor: pointer;
+  transition: all 120ms var(--ease); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.seg button.on { background: var(--card); color: var(--basil-deep); box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+
+.done-mark {
+  width: 72px; height: 72px; border-radius: 50%; margin: 4px auto 14px; display: grid; place-items: center;
+  background: var(--basil-soft); color: var(--basil-dark); animation: pop 420ms var(--spring);
+}
+@keyframes pop { from { transform: scale(.6); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+.ref {
+  font-family: var(--font-mono), monospace; font-size: 19px; font-weight: 600; letter-spacing: .04em;
+  padding: 9px 14px; border-radius: 10px; background: var(--paper); border: 1px solid var(--border); display: inline-block; margin-top: 6px;
+}
+.summary-rows { display: flex; flex-direction: column; gap: 8px; }
+.summary-rows .row-between { font-size: 14px; }
+.summary-total { display: flex; justify-content: space-between; padding-top: 10px; margin-top: 2px; border-top: 1.5px dashed var(--border-strong); font-family: var(--font-display), sans-serif; font-weight: 700; font-size: 15px; }
+
+/* ================================================================ bottom sheet */
+.sheet-overlay { position: fixed; inset: 0; z-index: 70; background: rgba(23, 32, 27, 0.5); animation: fadeIn 160ms ease; backdrop-filter: blur(2px); }
 .sheet {
-  position: fixed; left: 0; right: 0; bottom: 0; z-index: 71;
-  max-width: var(--app-max-w); margin: 0 auto;
-  max-height: 90dvh; background: var(--card);
-  border-radius: 20px 20px 0 0;
-  box-shadow: 0 -16px 40px rgba(28, 37, 32, 0.16);
-  display: flex; flex-direction: column;
-  animation: slideUp 220ms cubic-bezier(0.2, 0.8, 0.3, 1);
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 71; max-width: var(--app-max-w); margin: 0 auto;
+  max-height: 92dvh; background: var(--paper); border-radius: 26px 26px 0 0;
+  box-shadow: 0 -20px 50px rgba(23, 32, 27, 0.25); display: flex; flex-direction: column;
+  animation: slideUp 260ms cubic-bezier(0.2, 0.8, 0.3, 1);
 }
-.sheet-grabber {
-  width: 36px; height: 4px; border-radius: 999px;
-  background: var(--border-strong); margin: 10px auto 2px; cursor: pointer;
-}
-.sheet-head {
-  display: flex; align-items: center; justify-content: space-between; gap: 10px;
-  padding: 10px 18px 12px; border-bottom: 1px solid var(--border);
-}
-.sheet-title { font-family: var(--font-display), sans-serif; font-size: 16px; font-weight: 700; }
-.sheet-sub { font-size: 12px; color: var(--faint); margin-top: 1px; }
+.sheet-grabber { width: 40px; height: 5px; border-radius: 999px; background: var(--border-strong); margin: 10px auto 2px; cursor: pointer; flex-shrink: 0; }
+.sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 18px 12px; flex-shrink: 0; }
+.sheet-title { font-family: var(--font-display), sans-serif; font-size: 18px; font-weight: 700; letter-spacing: -0.01em; }
+.sheet-sub { font-size: 12.5px; color: var(--faint); margin-top: 1px; }
 .sheet-x {
-  border: none; background: none; font-size: 26px; line-height: 1;
-  color: var(--faint); cursor: pointer; padding: 0 4px; flex-shrink: 0;
+  border: none; background: var(--card); width: 34px; height: 34px; border-radius: 999px; font-size: 22px; line-height: 1;
+  color: var(--slate); cursor: pointer; display: grid; place-items: center; flex-shrink: 0; border: 1px solid var(--border);
 }
-.sheet-body {
-  flex: 1; overflow-y: auto; padding: 14px 16px;
-  /* Momentum scrolling, and a flick that reaches the end must not carry on
-     into the screen behind the sheet, which is the web default. */
-  -webkit-overflow-scrolling: touch;
-  overscroll-behavior: contain;
-}
+.sheet-body { flex: 1; overflow-y: auto; padding: 4px 16px 18px; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
 .sheet-foot {
-  display: flex; gap: 10px; flex-direction: column;
-  padding: 12px 16px calc(12px + var(--safe-b));
-  border-top: 1px solid var(--border); background: var(--card);
+  display: flex; gap: 10px; flex-direction: column; padding: 12px 16px calc(12px + var(--safe-b));
+  border-top: 1px solid var(--border); background: var(--card); flex-shrink: 0;
 }
+.sheet-foot .foot-line { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; color: var(--slate); }
+.sheet-foot .foot-line b { font-family: var(--font-display), sans-serif; font-size: 16px; color: var(--ink); }
 @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
+/* ================================================================ ticket cards (bookings) */
+.tk {
+  position: relative; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow); margin-bottom: 12px; overflow: hidden;
+}
+.tk-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 14px 16px 12px; }
+.tk-meal { font-family: var(--font-display), sans-serif; font-weight: 700; font-size: 16px; }
+.tk-when { font-size: 12.5px; color: var(--slate); margin-top: 2px; }
+.tk-body { padding: 0 16px 14px; }
+.tk-lines { display: flex; flex-wrap: wrap; gap: 6px; }
+.tk-line { font-size: 12.5px; font-weight: 600; padding: 4px 10px; border-radius: 999px; background: var(--paper); color: var(--slate); }
+.tk-line b { color: var(--ink); }
+.tk-ref { font-family: var(--font-mono), monospace; font-size: 12px; color: var(--faint); letter-spacing: .04em; }
+.tk-served { display: flex; align-items: center; gap: 7px; margin-top: 10px; padding: 9px 11px; border-radius: var(--radius-xs); background: var(--basil-soft); color: var(--basil-deep); font-size: 13px; font-weight: 600; }
+.tk-act { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.tk-act .btn { width: auto; }
+.tk-edit { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border-strong); }
+
+/* ================================================================ home: next meal */
+.next-card {
+  display: flex; gap: 14px; align-items: center; padding: 14px 16px; margin-bottom: 10px;
+  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow);
+}
+.next-date {
+  flex-shrink: 0; width: 54px; padding: 8px 0; border-radius: 13px; background: var(--basil-soft); color: var(--basil-deep);
+  display: flex; flex-direction: column; align-items: center; line-height: 1.1;
+}
+.next-date .d { font-family: var(--font-display), sans-serif; font-weight: 700; font-size: 20px; }
+.next-date .m { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; margin-top: 2px; }
+
+/* ================================================================ landing */
+.land-hero { padding: 26px 0 6px; }
+.land-mark { width: 60px; height: 60px; border-radius: 18px; background: var(--card); border: 1px solid var(--border); box-shadow: var(--shadow); display: grid; place-items: center; overflow: hidden; margin-bottom: 14px; }
+.land-mark img { width: 100%; height: 100%; object-fit: cover; }
+.way { display: flex; gap: 12px; align-items: flex-start; }
+.way-n { width: 26px; height: 26px; border-radius: 999px; flex-shrink: 0; margin-top: 1px; background: var(--ink); color: #fff; font-size: 12px; font-weight: 700; display: grid; place-items: center; font-family: var(--font-display), sans-serif; }
+.recent-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.recent-name { font-weight: 700; text-transform: capitalize; }
+
 @media (prefers-reduced-motion: reduce) {
-  .sk::after, .sheet, .sheet-overlay { animation: none; }
+  .sk::after, .sheet, .sheet-overlay, .done-mark { animation: none; }
   * { transition-duration: 0s !important; }
 }

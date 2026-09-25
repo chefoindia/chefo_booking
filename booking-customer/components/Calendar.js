@@ -143,36 +143,36 @@ export default function Calendar({ month, onMonthChange, value, onChange, today,
             )}
 
             <style>{`
-              .cal { margin-top: 12px; }
-              .cal-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
-              .cal-title { font-family: var(--font-display), sans-serif; font-weight: 700; font-size: 14.5px; }
+              .cal { margin-top: 12px; padding: 12px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+              .cal-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+              .cal-title { font-family: var(--font-display), sans-serif; font-weight: 700; font-size: 15px; }
               .cal-nav {
-                width: 36px; height: 36px; border-radius: 9px; flex-shrink: 0;
-                border: 1px solid var(--border-strong); background: var(--card);
-                color: var(--ink); font-size: 19px; line-height: 1; cursor: pointer;
+                width: 36px; height: 36px; border-radius: 999px; flex-shrink: 0;
+                border: 1px solid var(--border); background: var(--paper);
+                color: var(--ink); font-size: 20px; line-height: 1; cursor: pointer;
               }
               .cal-nav:disabled { opacity: .3; cursor: not-allowed; }
               .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
               .cal-dow { margin-bottom: 4px; }
-              .cal-dow span { text-align: center; font-size: 11px; font-weight: 600; color: var(--faint); }
+              .cal-dow span { text-align: center; font-size: 11px; font-weight: 700; color: var(--faint); }
               .cal-cell { min-height: 42px; }
               .cal-day {
                 display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
-                border: 1.5px solid transparent; border-radius: 10px; background: var(--paper);
+                border: 1.5px solid transparent; border-radius: 12px; background: var(--paper);
                 font: inherit; font-size: 14.5px; font-weight: 600; color: var(--ink);
                 cursor: pointer; padding: 0; width: 100%;
                 font-variant-numeric: tabular-nums;
-                transition: background-color 120ms var(--ease), border-color 120ms var(--ease);
+                transition: background-color 120ms var(--ease), border-color 120ms var(--ease), transform 120ms var(--ease);
               }
-              .cal-day.is-today { border-color: var(--basil); color: var(--basil-dark); }
-              .cal-day.is-closed { background: var(--card); color: var(--faint); text-decoration: line-through; }
-              .cal-day.is-out { background: transparent; color: var(--faint); opacity: .45; cursor: not-allowed; text-decoration: none; }
-              .cal-day.is-mine { background: var(--basil-soft); border-color: var(--basil); color: var(--basil-dark); text-decoration: none; }
-              /* The chosen day always wins, so it is declared last. */
-              .cal-day.is-on { background: var(--basil); border-color: var(--basil); color: #fff; text-decoration: none; }
+              .cal-day:active:not(:disabled) { transform: scale(.94); }
+              .cal-day.is-today { border-color: var(--basil-line); color: var(--basil-dark); background: var(--basil-soft); }
+              .cal-day.is-closed { background: transparent; color: var(--faint); text-decoration: line-through; }
+              .cal-day.is-out { background: transparent; color: var(--faint); opacity: .4; cursor: not-allowed; text-decoration: none; }
+              .cal-day.is-mine { background: var(--basil-soft); border-color: var(--basil); color: var(--basil-deep); text-decoration: none; }
+              .cal-day.is-on { background: var(--basil); border-color: var(--basil); color: #fff; text-decoration: none; box-shadow: 0 8px 16px -10px rgba(15,61,43,.8); }
               .cal-day.is-on .cal-dot.on { background: #fff; }
               .cal-dot { width: 4px; height: 4px; border-radius: 999px; background: transparent; }
-              .cal-dot.on { background: var(--turmeric); }
+              .cal-dot.on { background: var(--saffron); }
               .cal-legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px; }
               .cal-key { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--faint); }
               .cal-swatch { width: 11px; height: 2px; background: var(--faint); border-radius: 2px; }
