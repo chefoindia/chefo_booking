@@ -16,6 +16,8 @@ const router = express.Router();
 
 const BusinessUser = require("../models/BusinessUser");
 const Role = require("../models/Role");
+const Outlet = require("../models/Outlet");
+const { inScope } = require("../utils/outletScope");
 const { authenticate, requirePermission, actorOf } = require("../middleware/authenticate");
 const { MODULES, canGrant, filterGrantable } = require("../utils/permissions");
 const { normalisePhone } = require("../utils/phone");
@@ -29,7 +31,7 @@ const meta = (req) => ({ ip: req.ip, userAgent: req.headers["user-agent"] || "" 
 
 // Never includes passwordHash or tokenVersion. Shaped explicitly on the way out
 // so a future schema field cannot leak by being returned wholesale.
-const shapeUser = (u, role) => ({
+const shapeUser = (u, role, outletNames = new Map()) => ({
     id: u._id,
     name: u.name,
     email: u.email || "",
@@ -40,9 +42,45 @@ const shapeUser = (u, role) => ({
     roleId: u.roleId || null,
     roleName: role?.name || "",
     roleArchived: Boolean(role?.archivedAt),
+    // Empty = canteen-wide. Owners are always canteen-wide whatever is stored.
+    outletIds: u.isOwner ? [] : (u.outletIds || []).map(String),
+    outletNames: u.isOwner ? [] : (u.outletIds || []).map((id) => outletNames.get(String(id)) || "").filter(Boolean),
     lastLoginAt: u.lastLoginAt,
     createdAt: u.createdAt,
 });
+
+/**
+ * Which outlets may this actor assign to someone?
+ *
+ * Same escalation rule as roles: you cannot hand out what you do not hold.
+ * A canteen-wide actor may assign any outlet of the business, or none
+ * (canteen-wide). An actor restricted to Block A may only assign Block A —
+ * and may NOT assign "no restriction", because that is wider than their own.
+ *
+ * Ids from another business are simply not found and refused.
+ */
+async function resolveAssignableOutlets(req, outletIds) {
+    if (outletIds === undefined) return { ok: true, outletIds: undefined };   // not touched
+    const wanted = Array.isArray(outletIds) ? [...new Set(outletIds.map(String).filter(isId))] : [];
+    if (Array.isArray(outletIds) && wanted.length !== new Set(outletIds.map(String)).size) {
+        return { ok: false, status: 400, message: "Invalid outlet." };
+    }
+    if (!wanted.length) {
+        if (req.outletScope) {
+            return { ok: false, status: 403, code: "OUTLET_NOT_GRANTABLE",
+                message: "You are limited to certain outlets, so you can't give someone access to every outlet." };
+        }
+        return { ok: true, outletIds: [] };
+    }
+    const found = await Outlet.find({ _id: { $in: wanted }, businessId: req.businessId }).select("_id name").lean();
+    if (found.length !== wanted.length) return { ok: false, status: 404, message: "Outlet not found." };
+    const beyond = found.filter((o) => !inScope(req.outletScope, o._id));
+    if (beyond.length) {
+        return { ok: false, status: 403, code: "OUTLET_NOT_GRANTABLE",
+            message: `You can't give access to ${beyond.map((o) => o.name).join(", ")} — you don't have it yourself.` };
+    }
+    return { ok: true, outletIds: found.map((o) => o._id), names: found.map((o) => o.name) };
+}
 
 const notGrantable = (res, refused, verb = "grant") =>
     res.status(403).json({
@@ -279,11 +317,13 @@ router.get("/api/team",
             const users = await BusinessUser.find({ businessId: req.businessId })
                 .sort({ isOwner: -1, name: 1 }).lean();
             const roleIds = [...new Set(users.map((u) => u.roleId).filter(Boolean).map(String))];
-            const roles = roleIds.length
-                ? await Role.find({ _id: { $in: roleIds }, businessId: req.businessId }).lean()
-                : [];
+            const [roles, outlets] = await Promise.all([
+                roleIds.length ? Role.find({ _id: { $in: roleIds }, businessId: req.businessId }).lean() : [],
+                Outlet.find({ businessId: req.businessId }).select("name").lean(),
+            ]);
             const byId = new Map(roles.map((r) => [String(r._id), r]));
-            res.json({ team: users.map((u) => shapeUser(u, byId.get(String(u.roleId)))) });
+            const outletNames = new Map(outlets.map((o) => [String(o._id), o.name]));
+            res.json({ team: users.map((u) => shapeUser(u, byId.get(String(u.roleId)), outletNames)) });
         } catch (err) { next(err); }
     });
 
@@ -330,6 +370,13 @@ router.post("/api/team",
                 return res.status(resolved.status)
                     .json({ message: resolved.message, code: resolved.code, refused: resolved.refused });
             }
+            // Outlet restriction. Absent = canteen-wide for a canteen-wide
+            // actor; a restricted actor must name outlets inside their own.
+            const outletsRes = await resolveAssignableOutlets(req, req.body?.outletIds ?? (req.outletScope ? undefined : []));
+            if (!outletsRes.ok) return res.status(outletsRes.status).json({ message: outletsRes.message, code: outletsRes.code });
+            if (req.outletScope && outletsRes.outletIds === undefined) {
+                return res.status(400).json({ message: "Choose which of your outlets this person may work at." });
+            }
 
             const user = await BusinessUser.create({
                 // From the session, never the body — no request can create a
@@ -341,13 +388,14 @@ router.post("/api/team",
                 // business, not by an API call.
                 isOwner: false,
                 roleId: resolved.role?._id || null,
+                outletIds: outletsRes.outletIds || [],
                 isActive: req.body?.isActive === false ? false : true,
             });
 
             record({
                 businessId: req.businessId, actor: req.actor, requestMeta: meta(req),
                 action: "Added a team member",
-                after: { name, role: resolved.role?.name || "None" },
+                after: { name, role: resolved.role?.name || "None", outlets: outletsRes.names?.length ? outletsRes.names : "All outlets" },
             });
             notify("team.added", {
                 businessId: req.businessId, actor: req.actor, requestMeta: meta(req),
@@ -356,10 +404,12 @@ router.post("/api/team",
                     { label: "Name", value: name },
                     { label: "Signs in with", value: [phone, loginId, email].filter(Boolean).join(" / ") },
                     { label: "Role", value: resolved.role?.name || "None yet" },
+                    { label: "Outlets", value: outletsRes.names?.length ? outletsRes.names.join(", ") : "All outlets" },
                 ],
                 concern: CONCERN.access,
             });
-            res.status(201).json({ member: shapeUser(user, resolved.role) });
+            const names = new Map((outletsRes.outletIds || []).map((id, i) => [String(id), outletsRes.names[i]]));
+            res.status(201).json({ member: shapeUser(user, resolved.role, names) });
         } catch (err) { next(err); }
     });
 
@@ -377,7 +427,16 @@ router.patch("/api/team/:id",
             });
             if (!user) return res.status(404).json({ message: "Team member not found." });
 
-            const before = { name: user.name, roleId: user.roleId, isActive: user.isActive };
+            const before = { name: user.name, roleId: user.roleId, isActive: user.isActive, outletIds: (user.outletIds || []).map(String) };
+
+            // A restricted actor may only edit people inside their own outlets,
+            // for the same reason they may only assign those outlets.
+            if (req.outletScope) {
+                const theirs = (user.outletIds || []);
+                if (!theirs.length || !theirs.every((id) => inScope(req.outletScope, id))) {
+                    return res.status(403).json({ message: "That person works at outlets you don't have access to.", code: "OUTLET_FORBIDDEN" });
+                }
+            }
 
             if (req.body?.name !== undefined) user.name = clean(req.body.name, 60) || user.name;
 
@@ -434,6 +493,18 @@ router.patch("/api/team/:id",
                 user.roleId = resolved.role?._id || null;
             }
 
+            let outletsChanged = false;
+            if (req.body?.outletIds !== undefined) {
+                const outletsRes = await resolveAssignableOutlets(req, req.body.outletIds);
+                if (!outletsRes.ok) return res.status(outletsRes.status).json({ message: outletsRes.message, code: outletsRes.code });
+                const next_ = (outletsRes.outletIds || []).map(String).sort().join(",");
+                outletsChanged = next_ !== [...before.outletIds].sort().join(",");
+                user.outletIds = outletsRes.outletIds || [];
+                // Narrowing someone's outlets must bite on their next request,
+                // not at token expiry — same as a deactivation.
+                if (outletsChanged) user.tokenVersion += 1;
+            }
+
             let passwordChanged = false;
             if (req.body?.password !== undefined) {
                 const password = String(req.body.password);
@@ -456,12 +527,19 @@ router.patch("/api/team/:id",
             }
 
             await user.save();
-            const role = user.roleId ? await Role.findById(user.roleId).lean() : null;
+            const [role, outletDocs] = await Promise.all([
+                user.roleId ? Role.findById(user.roleId).lean() : null,
+                user.outletIds?.length ? Outlet.find({ _id: { $in: user.outletIds } }).select("name").lean() : [],
+            ]);
+            const outletNames = new Map(outletDocs.map((o) => [String(o._id), o.name]));
 
             record({
                 businessId: req.businessId, actor: req.actor, requestMeta: meta(req),
                 action: "Updated a team member",
-                before, after: { name: user.name, roleId: user.roleId, isActive: user.isActive, passwordChanged },
+                before, after: {
+                    name: user.name, roleId: user.roleId, isActive: user.isActive, passwordChanged,
+                    outletIds: (user.outletIds || []).map(String),
+                },
             });
 
             const roleChanged = String(before.roleId || "") !== String(user.roleId || "");
@@ -473,7 +551,7 @@ router.patch("/api/team/:id",
                     title: "Team member deactivated", summary: `${user.name} can no longer sign in. Their existing sessions were ended.`,
                     rows: [{ label: "Name", value: user.name }], concern: CONCERN.access,
                 });
-            } else if (roleChanged || passwordChanged || reactivated) {
+            } else if (roleChanged || passwordChanged || reactivated || outletsChanged) {
                 notify("team.changed", {
                     businessId: req.businessId, actor: req.actor, requestMeta: meta(req),
                     title: "Team member updated",
@@ -481,13 +559,14 @@ router.patch("/api/team/:id",
                     rows: [
                         { label: "Name", value: user.name },
                         ...(roleChanged ? [{ label: "Role", value: role?.name || "None" }] : []),
+                        ...(outletsChanged ? [{ label: "Outlets", value: outletDocs.length ? outletDocs.map((o) => o.name).join(", ") : "All outlets" }] : []),
                         ...(passwordChanged ? [{ label: "Password", value: "Set to a new value" }] : []),
                         ...(reactivated ? [{ label: "Status", value: "Reactivated" }] : []),
                     ],
                     concern: CONCERN.access,
                 });
             }
-            res.json({ member: shapeUser(user, role) });
+            res.json({ member: shapeUser(user, role, outletNames) });
         } catch (err) { next(err); }
     });
 
@@ -509,6 +588,7 @@ router.delete("/api/team/:id",
 
             user.isActive = false;
             user.roleId = null;
+            user.outletIds = [];
             user.email = "";
             user.phone = "";
             user.loginId = "";  // frees the identifiers for reuse

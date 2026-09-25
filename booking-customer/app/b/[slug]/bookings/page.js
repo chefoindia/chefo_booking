@@ -391,6 +391,7 @@ function BookingCard({
                     <strong>{b.mealTypeName}</strong>
                     <div className="xsmall faint">
                         {formatDate(b.date, { year: true })}{dayNote(b.date, today)}
+                        {b.outletName ? ` · ${b.outletName}` : ""}
                     </div>
                 </div>
                 <span className={`badge ${s.cls}`}>{s.label}</span>

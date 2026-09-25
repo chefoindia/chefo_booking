@@ -25,11 +25,13 @@ const MealVariant = require("../models/MealVariant");
 const BookingParty = require("../models/BookingParty");
 const Booking = require("../models/Booking");
 const BookingRequest = require("../models/BookingRequest");
+const Outlet = require("../models/Outlet");
 
 const { cutoffState, isDateKey, todayKey, shiftDateKey, formatTimeOfDay } = require("../utils/time");
 const { normalisePhone } = require("../utils/phone");
 const { newTicket } = require("../utils/ticket");
 const { record } = require("./audit");
+const { inScope } = require("../utils/outletScope");
 
 /** A refusal the routes can turn straight into an HTTP response. */
 class DomainError extends Error {
@@ -157,6 +159,63 @@ function assertDateBookable({ business, date, now = new Date() }) {
             code: "TOO_FAR_AHEAD",
         });
     }
+}
+
+/* ------------------------------------------------------------------ */
+/* Outlet                                                               */
+/* ------------------------------------------------------------------ */
+/**
+ * Does this business require an outlet on a new booking?
+ *
+ * YES the moment it has at least one active outlet. NO while it has none —
+ * which is every business that existed before outlets did, and every small
+ * business that never needs them. That is the whole migration story for new
+ * bookings: nothing changes for a canteen until it creates its first outlet,
+ * and from then on the customer form and the counter both insist on one.
+ */
+async function outletRequired(businessId) {
+    return Boolean(await Outlet.exists({ businessId, active: true }));
+}
+
+/**
+ * Resolve the outlet a NEW booking belongs to, or null when this business
+ * runs none.
+ *
+ * Scoped by businessId, so another canteen's outlet id is simply "not
+ * available" — reported the same way as a made-up one. Inactive outlets are
+ * refused for new bookings while their history stays intact. The result is
+ * what gets written onto the booking; nothing downstream re-derives it.
+ */
+async function resolveOutlet({ businessId, outletId, scope = null }) {
+    const required = await outletRequired(businessId);
+    const wanted = outletId === undefined || outletId === null ? "" : String(outletId).trim();
+
+    if (!wanted) {
+        if (required) fail("Choose an outlet for this booking.", { code: "OUTLET_REQUIRED" });
+        return null;
+    }
+    if (!mongoose.Types.ObjectId.isValid(wanted)) fail("That outlet isn't available.", { status: 404, code: "NO_OUTLET" });
+
+    const outlet = await Outlet.findOne({ _id: wanted, businessId }).lean();
+    if (!outlet) fail("That outlet isn't available.", { status: 404, code: "NO_OUTLET" });
+    if (!outlet.active) fail(`"${outlet.name}" isn't taking bookings at the moment.`, { status: 409, code: "OUTLET_INACTIVE" });
+
+    // An operator restricted to Block A cannot enter a Block B booking at the
+    // counter. The customer form passes no scope: a customer may book any
+    // active outlet of the business.
+    if (!inScope(scope, outlet._id)) {
+        fail("You don't have access to that outlet.", { status: 403, code: "OUTLET_FORBIDDEN" });
+    }
+    return outlet;
+}
+
+/** The booking's outlet must be inside the actor's scope, or the actor may not touch it. */
+function assertOutletScope(scope, booking) {
+    if (inScope(scope, booking.outletId)) return;
+    fail(booking.outletId
+        ? `This booking belongs to another outlet${booking.outletName ? ` (${booking.outletName})` : ""}.`
+        : "This booking isn't assigned to an outlet you can act on.",
+    { status: 403, code: "WRONG_OUTLET" });
 }
 
 /* ------------------------------------------------------------------ */
@@ -376,9 +435,15 @@ async function createBooking({
     // The business's own questions. Validated against its configuration below,
     // never trusted as sent.
     answers = {},
+    // Which outlet this booking is for. Required once the business has any
+    // active outlet; resolved and validated in resolveOutlet(), then frozen
+    // onto the booking. `outletScope` is the OPERATOR's restriction (null =
+    // canteen-wide); the customer form never passes one.
+    outletId = null, outletScope = null,
     actor = null, now = new Date(), requestMeta = {},
 }) {
     const { business, mealType, cutoff } = await resolveContext({ businessId, mealTypeId, date, now });
+    const outlet = await resolveOutlet({ businessId, outletId, scope: outletScope });
 
     if (source === "customer") {
         if (!business.acceptingBookings) {
@@ -430,6 +495,10 @@ async function createBooking({
         mealTypeKey: mealType.key,
         mealTypeName: mealType.name,
         date,
+        // Frozen here. Every later read — the list, the scanner, the kitchen
+        // sheet, the customer's pass — takes the outlet from this row.
+        outletId: outlet?._id || null,
+        outletName: outlet?.name || "",
         lines,
         totalQuantity,
         totalAmount,
@@ -461,9 +530,11 @@ async function createBooking({
         action: "Created a booking",
         bookingId: booking._id,
         requestId: request?._id || null,
+        outletId: booking.outletId,
         after: { lines, totalQuantity, status: booking.status },
         details: {
             reference, date, meal: mealType.name, afterCutoff: cutoff.passed, source,
+            ...(outlet ? { outlet: outlet.name } : {}),
             // What the customer answered, in the trail, because a disputed
             // "I definitely wrote gate 3" is settled by the log or by nothing.
             ...(answerSnapshot.length ? { answers: answerSnapshot } : {}),
@@ -486,10 +557,13 @@ async function createBooking({
  */
 async function changeBooking({
     businessId, bookingId, quantities, customerNote = "",
-    actor = null, byOperator = false, now = new Date(), requestMeta = {},
+    actor = null, byOperator = false, outletScope = null, now = new Date(), requestMeta = {},
 }) {
     const booking = await Booking.findOne({ _id: bookingId, businessId });
     if (!booking) fail("Booking not found.", { status: 404, code: "NO_BOOKING" });
+    // The booking's outlet is read from the row, never from the request, and
+    // an operator outside it may not move its numbers.
+    if (byOperator) assertOutletScope(outletScope, booking);
 
     if (booking.status === "cancelled") fail("That booking was cancelled.", { status: 409, code: "CANCELLED" });
     if (booking.status === "rejected") fail("That booking was rejected.", { status: 409, code: "REJECTED" });
@@ -539,7 +613,7 @@ async function changeBooking({
         await record({
             businessId, actor, requestMeta,
             action: byOperator ? "Operator changed a booking" : "Changed a booking",
-            bookingId: booking._id,
+            bookingId: booking._id, outletId: booking.outletId,
             before, after: { lines, totalQuantity },
             details: { reference: booking.reference, afterCutoff: cutoff.passed, direct: true },
         });
@@ -561,10 +635,11 @@ async function changeBooking({
  */
 async function cancelBooking({
     businessId, bookingId, reason = "",
-    actor = null, byOperator = false, now = new Date(), requestMeta = {},
+    actor = null, byOperator = false, outletScope = null, now = new Date(), requestMeta = {},
 }) {
     const booking = await Booking.findOne({ _id: bookingId, businessId });
     if (!booking) fail("Booking not found.", { status: 404, code: "NO_BOOKING" });
+    if (byOperator) assertOutletScope(outletScope, booking);
     if (booking.status === "cancelled") fail("That booking is already cancelled.", { status: 409, code: "CANCELLED" });
     if (booking.status === "rejected") fail("That booking was rejected.", { status: 409, code: "REJECTED" });
 
@@ -613,7 +688,7 @@ async function cancelBooking({
         await record({
             businessId, actor, requestMeta,
             action: byOperator ? "Operator cancelled a booking" : "Cancelled a booking",
-            bookingId: booking._id,
+            bookingId: booking._id, outletId: booking.outletId,
             before, after: { status: "cancelled", totalQuantity: 0 },
             details: { reference: booking.reference, afterCutoff: cutoff.passed, reason, direct: true },
         });
@@ -636,7 +711,7 @@ const hasOpenRequest = async (bookingId) =>
  * stays readable for good.
  */
 async function resolveRequest({
-    businessId, requestId, decision, note = "", actor, now = new Date(), requestMeta = {},
+    businessId, requestId, decision, note = "", actor, outletScope = null, now = new Date(), requestMeta = {},
 }) {
     if (!["accept", "reject"].includes(decision)) fail("Decision must be accept or reject.");
 
@@ -648,6 +723,9 @@ async function resolveRequest({
 
     const booking = await Booking.findOne({ _id: request.bookingId, businessId });
     if (!booking) fail("The related booking no longer exists.", { status: 404, code: "NO_BOOKING" });
+    // Decided by someone who may act at the booking's outlet — the request
+    // carries a copy of the outlet, but the booking row is the authority.
+    assertOutletScope(outletScope, booking);
 
     const before = {
         status: booking.status,
@@ -696,7 +774,7 @@ async function resolveRequest({
     await record({
         businessId, actor, requestMeta,
         action: `${accepted ? "Accepted" : "Rejected"} a ${request.type.replace("_", " ")} request`,
-        bookingId: booking._id, requestId: request._id,
+        bookingId: booking._id, requestId: request._id, outletId: booking.outletId,
         before,
         after: { status: booking.status, totalQuantity: booking.totalQuantity, lines: booking.lines },
         details: { reference: booking.reference, requestRef: request.reference, note },
@@ -707,6 +785,9 @@ async function resolveRequest({
 
 module.exports = {
     DomainError,
+    outletRequired,
+    resolveOutlet,
+    assertOutletScope,
     createBooking,
     changeBooking,
     cancelBooking,

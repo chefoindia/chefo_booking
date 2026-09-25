@@ -60,6 +60,7 @@ export function addToLedger(slug, booking) {
         bookingId: String(booking.id || booking.bookingId || ""),
         date: booking.date || "",
         mealTypeName: booking.mealTypeName || "",
+        outletName: booking.outletName || "",
         totalQuantity: Number(booking.totalQuantity) || 0,
         savedAt: new Date().toISOString(),
     };

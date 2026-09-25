@@ -70,6 +70,9 @@ function People() {
         const body = {
             name: form.name, email: form.email, phone: form.phone,
             roleId: form.roleId || null,
+            // Empty = canteen-wide. The server refuses anything wider than
+            // the person saving it holds.
+            outletIds: form.outletIds || [],
             ...(form.password ? { password: form.password } : {}),
         };
         try {
@@ -97,7 +100,12 @@ function People() {
                     <strong>People</strong>
                     {access.can("users.create") && (
                         <button className="btn btn-primary btn-sm"
-                            onClick={() => setEditing({ name: "", email: "", phone: "", roleId: "", password: "" })}>
+                            onClick={() => setEditing({
+                                name: "", email: "", phone: "", roleId: "", password: "",
+                                // A restricted admin can only hand out their own
+                                // outlets, so start from those rather than "all".
+                                outletIds: Array.isArray(access.outletScope) ? access.outletScope.map(String) : [],
+                            })}>
                             + Add person
                         </button>
                     )}
@@ -108,7 +116,7 @@ function People() {
                         : (
                             <div className="table-wrap">
                                 <table className="tbl">
-                                    <thead><tr><th>Name</th><th>Sign-in</th><th>Role</th><th>Status</th><th></th></tr></thead>
+                                    <thead><tr><th>Name</th><th>Sign-in</th><th>Role</th>{access.outlets.length > 0 && <th>Outlets</th>}<th>Status</th><th></th></tr></thead>
                                     <tbody>
                                         {rows.map((m) => (
                                             <tr key={m.id}>
@@ -124,6 +132,13 @@ function People() {
                                                         : m.roleName ? <span className="badge badge-gray">{m.roleName}</span>
                                                             : <span className="small faint">No role</span>}
                                                 </td>
+                                                {access.outlets.length > 0 && (
+                                                    <td className="small">
+                                                        {m.isOwner || !m.outletIds?.length
+                                                            ? <span className="muted">All outlets</span>
+                                                            : m.outletNames.join(", ")}
+                                                    </td>
+                                                )}
                                                 <td>
                                                     <span className={`badge ${m.isActive ? "badge-green" : "badge-red"}`}>
                                                         {m.isActive ? "Active" : "Inactive"}
@@ -193,10 +208,62 @@ function People() {
                                 ))}
                             </Select>
                         </Field>
+
+                        {/* WHERE they may act, on top of what the role lets
+                            them do. Nothing ticked = the whole canteen. A
+                            scanner ticked to Block A can only open and serve
+                            Block A's codes, and sees only Block A's data. */}
+                        {access.outlets.length > 0 && (
+                            <OutletPicker
+                                outlets={access.outlets}
+                                scope={access.outletScope}
+                                value={editing.outletIds || []}
+                                onChange={(ids) => setEditing((p) => ({ ...p, outletIds: ids }))}
+                            />
+                        )}
                     </div>
                 </Modal>
             )}
         </>
+    );
+}
+
+function OutletPicker({ outlets, scope, value, onChange }) {
+    const restricted = Array.isArray(scope);
+    const has = (id) => value.some((v) => String(v) === String(id));
+    const toggle = (id) => onChange(has(id) ? value.filter((v) => String(v) !== String(id)) : [...value, String(id)]);
+    return (
+        <div>
+            <div className="num-label" style={{ marginBottom: 6 }}>Outlets</div>
+            <div className="row wrap" style={{ gap: 6 }}>
+                {!restricted && (
+                    <label className="check-row" style={{
+                        border: "1px solid var(--border)", borderRadius: 8, padding: "5px 10px", fontSize: 12.5,
+                        background: !value.length ? "var(--basil-soft)" : "var(--card)",
+                        borderColor: !value.length ? "var(--basil)" : "var(--border)",
+                    }}>
+                        <input type="checkbox" checked={!value.length} onChange={() => onChange([])} />
+                        All outlets
+                    </label>
+                )}
+                {outlets.map((o) => (
+                    <label key={o.id} className="check-row" style={{
+                        border: "1px solid var(--border)", borderRadius: 8, padding: "5px 10px", fontSize: 12.5,
+                        background: has(o.id) ? "var(--basil-soft)" : "var(--card)",
+                        borderColor: has(o.id) ? "var(--basil)" : "var(--border)",
+                        opacity: o.active === false ? 0.7 : 1,
+                    }}>
+                        <input type="checkbox" checked={has(o.id)} onChange={() => toggle(o.id)} />
+                        {o.name}{o.active === false ? " (inactive)" : ""}
+                    </label>
+                ))}
+            </div>
+            <span className="hint">
+                {restricted
+                    ? "You can only assign the outlets you work at yourself."
+                    : "Tick specific outlets to limit this person to them — their scanner will only accept those outlets’ codes and their dashboard shows only those bookings. Nothing ticked means the whole canteen."}
+            </span>
+        </div>
     );
 }
 

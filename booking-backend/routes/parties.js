@@ -14,6 +14,7 @@ const { normalisePhone } = require("../utils/phone");
 const { record } = require("../services/audit");
 const { notify, CONCERN } = require("../services/notify");
 const { sendCsv } = require("../utils/csv");
+const { scopedOutletMatch } = require("../utils/outletScope");
 
 const isId = (v) => mongoose.Types.ObjectId.isValid(String(v));
 const clean = (v, max = 120) => String(v ?? "").replace(/\s+/g, " ").trim().slice(0, max);
@@ -82,7 +83,12 @@ router.get("/api/parties/:id",
             const party = await BookingParty.findOne({ _id: req.params.id, businessId: req.businessId }).lean();
             if (!party) return res.status(404).json({ message: "Not found." });
 
-            const bookings = await Booking.find({ businessId: req.businessId, partyId: party._id })
+            // The party record is the business's; the bookings shown under it
+            // are only the ones this user's outlet scope (and the selector)
+            // allow, so a Block A operator never reads Block B history here.
+            const om = await scopedOutletMatch(req, req.query.outletId);
+            if (!om.ok) return next(om.error);
+            const bookings = await Booking.find({ businessId: req.businessId, partyId: party._id, ...om.match })
                 .sort({ date: -1, createdAt: -1 }).limit(100).lean();
 
             // Lifetime totals, so the operator can see at a glance whether this

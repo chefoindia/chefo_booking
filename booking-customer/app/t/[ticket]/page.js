@@ -130,7 +130,9 @@ export default function TicketPage() {
                 <div className="row-between" style={{ marginBottom: 10 }}>
                     <div style={{ minWidth: 0 }}>
                         <strong>{b.mealTypeName}</strong>
-                        <div className="xsmall faint">{formatDate(b.date, { year: true })}</div>
+                        <div className="xsmall faint">
+                            {formatDate(b.date, { year: true })}{b.outletName ? ` · ${b.outletName}` : ""}
+                        </div>
                     </div>
                     <span className={`badge ${s.cls}`}>{s.label}</span>
                 </div>

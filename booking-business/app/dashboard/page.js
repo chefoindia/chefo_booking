@@ -13,6 +13,7 @@ import { useAccess } from "./layout";
 import { useToast } from "@/components/ToastProvider";
 import { formatDate, formatTime, todayKey, shiftDate } from "@/lib/format";
 import Empty from "@/components/Empty";
+import OutletScopeLine from "@/components/OutletScopeLine";
 
 export default function TodayPage() {
     const access = useAccess();
@@ -21,17 +22,21 @@ export default function TodayPage() {
     const [data, setData] = useState(null);
     const [loading, setLoading] = useState(true);
 
+    // The selector in the top bar decides which slice this page describes;
+    // it goes to the server as a filter and the server checks it against the
+    // user's own outlet scope. Nothing is filtered here.
+    const outletQs = access.outletQs;
     const load = useCallback(async () => {
         setLoading(true);
         try {
-            setData(await get(`/api/dashboard/today?date=${date}`));
+            setData(await get(`/api/dashboard/today?date=${date}${outletQs ? `&${outletQs}` : ""}`));
         } catch (e) {
             toast("error", "Couldn't load today's counts", e.message);
             setData(null);
         } finally {
             setLoading(false);
         }
-    }, [date, toast]);
+    }, [date, outletQs, toast]);
 
     useEffect(() => { load(); }, [load]);
 
@@ -53,6 +58,7 @@ export default function TodayPage() {
                         What the kitchen needs to prepare. One confirmed number per
                         service — nothing is waiting on a decision any more.
                     </p>
+                    <OutletScopeLine />
                 </div>
                 <div className="row">
                     <button className="btn btn-secondary btn-sm" onClick={() => setDate(shiftDate(date, -1))}>←</button>
@@ -89,10 +95,70 @@ export default function TodayPage() {
                     </div>
 
                     <div className="svc-grid">
-                        {data.services.map((s) => <ServiceCard key={s.mealTypeId} s={s} date={date} />)}
+                        {data.services.map((s) => <ServiceCard key={s.mealTypeId} s={s} date={date} outlet={access.outlet} />)}
                     </div>
+
+                    {/* The same bookings, split by outlet. Only on the overall
+                        view — a single outlet's page IS its own breakdown. The
+                        server grouped these from the rows the cards above
+                        summed, so the lines always add up to the cards. */}
+                    {data.byOutlet && data.byOutlet.length > 0 && (
+                        <OutletBreakdown byOutlet={data.byOutlet} services={data.services} date={date}
+                            onPick={(id) => access.setOutlet(id)} />
+                    )}
                 </>
             )}
+        </div>
+    );
+}
+
+function OutletBreakdown({ byOutlet, services, date, onPick }) {
+    return (
+        <div className="card" style={{ marginTop: 16 }}>
+            <div className="card-pad row-between wrap" style={{ paddingBottom: 10 }}>
+                <div>
+                    <strong style={{ fontFamily: "var(--font-display)", fontSize: 15 }}>By outlet</strong>
+                    <div className="xsmall faint">Confirmed meals per outlet, per service. Pick an outlet to see only its bookings.</div>
+                </div>
+            </div>
+            <div className="table-wrap">
+                <table className="tbl">
+                    <thead>
+                        <tr>
+                            <th>Outlet</th>
+                            {services.map((s) => <th key={s.mealTypeId} className="num">{s.name}</th>)}
+                            <th className="num">Total</th>
+                            <th className="num">Bookings</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {byOutlet.map((o) => (
+                            <tr key={o.outletId || "unassigned"} style={{ opacity: o.active === false ? 0.65 : 1 }}>
+                                <td>
+                                    <strong>{o.name}</strong>
+                                    {o.active === false && <span className="badge badge-gray" style={{ marginLeft: 6 }}>Inactive</span>}
+                                </td>
+                                {o.services.map((s) => (
+                                    <td key={s.mealTypeId} className="num"
+                                        title={s.byVariant.map((v) => `${v.quantity} ${v.variantName}`).join(", ")}>
+                                        {s.totalQuantity || <span className="faint">—</span>}
+                                    </td>
+                                ))}
+                                <td className="num"><strong>{o.totalQuantity}</strong></td>
+                                <td className="num">{o.bookingCount}</td>
+                                <td>
+                                    {o.outletId ? (
+                                        <button className="btn btn-ghost btn-sm" onClick={() => onPick(o.outletId)}>View</button>
+                                    ) : (
+                                        <Link className="btn btn-ghost btn-sm" href={`/dashboard/bookings?date=${date}&outletId=unassigned`}>View</Link>
+                                    )}
+                                </td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            </div>
         </div>
     );
 }
@@ -112,7 +178,7 @@ function SummaryTile({ label, value, strong, tone, href }) {
     return href ? <Link href={href}>{body}</Link> : body;
 }
 
-function ServiceCard({ s, date }) {
+function ServiceCard({ s, date, outlet }) {
     // Only meaningful once the deadline exists and has passed — a meal with no
     // cutoff never closes, and saying "closed" about it would be a lie.
     const closed = s.hasCutoff && s.cutoffPassed;
@@ -170,7 +236,7 @@ function ServiceCard({ s, date }) {
             )}
 
             <div style={{ marginTop: 12 }}>
-                <Link href={`/dashboard/bookings?date=${date}&mealTypeId=${s.mealTypeId}`}
+                <Link href={`/dashboard/bookings?date=${date}&mealTypeId=${s.mealTypeId}${outlet ? `&outletId=${outlet}` : ""}`}
                     className="btn btn-secondary btn-sm btn-block">
                     View bookings
                 </Link>

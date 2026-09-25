@@ -13,15 +13,22 @@ const { authenticate, requirePermission } = require("../middleware/authenticate"
 const { record } = require("../services/audit");
 const { notify, CONCERN } = require("../services/notify");
 const { sendCsv } = require("../utils/csv");
+const { scopedOutletMatch } = require("../utils/outletScope");
 
 const isId = (v) => mongoose.Types.ObjectId.isValid(String(v));
 const meta = (req) => ({ ip: req.ip, userAgent: req.headers["user-agent"] || "" });
 const escapeRx = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** Query -> Mongo filter, shared by the list and the export. */
-function buildFilter(req) {
-    const { q, actorKind, actorUserId, from, to, bookingId, requestId, partyId } = req.query;
+async function buildFilter(req) {
+    const { q, actorKind, actorUserId, from, to, bookingId, requestId, partyId, outletId } = req.query;
     const filter = { businessId: req.businessId };
+    // Outlet-scoped when asked, or when the reader is restricted. Entries with
+    // no outlet (business-level actions: roles, settings, exports) only show
+    // on the canteen-wide view — a Block A scanner has no claim on them.
+    const om = await scopedOutletMatch(req, outletId);
+    if (!om.ok) throw om.error;
+    Object.assign(filter, om.match);
     if (q && String(q).trim()) {
         const rx = new RegExp(escapeRx(String(q).trim()), "i");
         filter.$or = [{ action: rx }, { actorName: rx }];
@@ -44,7 +51,7 @@ router.get("/api/audit",
     authenticate, requirePermission("audit.view"),
     async (req, res, next) => {
         try {
-            const filter = buildFilter(req);
+            const filter = await buildFilter(req);
             const perPage = Math.min(Math.max(parseInt(req.query.perPage, 10) || 50, 10), 200);
             const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
 
@@ -70,7 +77,7 @@ router.get("/api/audit/export.csv",
     authenticate, requirePermission("audit.export"),
     async (req, res, next) => {
         try {
-            const filter = buildFilter(req);
+            const filter = await buildFilter(req);
             const rows = await AuditLog.find(filter).sort({ createdAt: -1 }).limit(5000).lean();
             const fmt = (d) => new Date(d).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", hour12: false });
             const csv = [["When (IST)", "Actor", "Kind", "Action", "Booking", "Request", "Party", "Before", "After", "Details", "IP", "Device"]];

@@ -46,6 +46,10 @@ export default function BookSheet({
     const [dayState, setDayState] = useState({});
 
     const [mealTypeId, setMealTypeId] = useState(initialMeal || "");
+    // WHICH OUTLET. The list comes from the server (whatever this canteen
+    // created — nothing is hardcoded) and so does whether one is required.
+    // Remembered on this phone as a convenience, like the name and number.
+    const [outletId, setOutletId] = useState("");
     const [qty, setQty] = useState({});
     const [form, setForm] = useState({
         name: "", phone: "", organisation: "", partyType: "individual", location: "", note: "",
@@ -80,6 +84,16 @@ export default function BookSheet({
         try {
             const res = await get(`/api/public/business/${slug}?date=${date}`);
             setData(res);
+            // A remembered or preselected outlet only stands if it is still
+            // one the canteen offers — a deactivated one must not stay picked.
+            setOutletId((prev) => {
+                const list = res.outlets || [];
+                const still = prev && list.some((o) => String(o.id) === String(prev));
+                if (still) return prev;
+                const remembered = String(readMe().outletId || "");
+                if (remembered && list.some((o) => String(o.id) === remembered)) return remembered;
+                return list.length === 1 ? String(list[0].id) : "";
+            });
             // A meal chosen on another day may not exist on this one, and one
             // that is closed or not served must not stay picked silently.
             setMealTypeId((prev) => {
@@ -165,8 +179,13 @@ export default function BookSheet({
         missing.filter((k) => touched[k]).map((k) => [k, "Needed"])
     );
 
+    const outlets = data?.outlets || [];
+    const outletRequired = Boolean(data?.outletRequired);
+    const outlet = outlets.find((o) => String(o.id) === String(outletId)) || null;
+
     const phoneOk = form.phone.replace(/\D/g, "").length >= 10;
     const ready = meal && meal.servedToday && !meal.cutoffPassed && total > 0
+        && (!outletRequired || outlet)
         && form.name.trim() && phoneOk
         && (!r.requireOrganisation || form.organisation.trim())
         && (!r.requireLocation || form.location.trim())
@@ -193,6 +212,9 @@ export default function BookSheet({
 
             const res = await post(`/api/public/business/${slug}/bookings`, {
                 mealTypeId, date, quantities: qty,
+                // Sent only when chosen; the server insists on one whenever
+                // this canteen has outlets, so nothing slips through without.
+                ...(outletId ? { outletId } : {}),
                 party: {
                     name: form.name.trim(), phone: form.phone.trim(),
                     organisation: form.organisation.trim(),
@@ -206,6 +228,7 @@ export default function BookSheet({
             writeMe({
                 name: form.name, phone: form.phone,
                 organisation: form.organisation, partyType: form.partyType,
+                outletId: outletId || "",
             });
             // The ticket is how this phone gets back to the pass later, so it
             // goes in the ledger the moment it exists.
@@ -243,6 +266,12 @@ export default function BookSheet({
                 </div>
 
                 <div className="stack-sm" style={{ marginTop: 14 }}>
+                    {/* The outlet, first: it is where they have to go. */}
+                    {bk.outletName && (
+                        <div className="row-between small">
+                            <span className="muted">Outlet</span><strong>{bk.outletName}</strong>
+                        </div>
+                    )}
                     <div className="row-between small">
                         <span className="muted">Meal</span><strong>{bk.mealTypeName}</strong>
                     </div>
@@ -293,7 +322,9 @@ export default function BookSheet({
                     : `Book ${total || ""} meal${total === 1 ? "" : "s"}${anyPriced && amount ? ` · ${inr(amount)}` : ""}`.replace("  ", " ")}
             </button>
             {/* One line, and only when something is actually stopping them. */}
-            {!ready && total > 0 && !phoneOk ? (
+            {!ready && total > 0 && outletRequired && !outlet ? (
+                <p className="hint center" style={{ marginTop: 0 }}>Choose which outlet you&apos;ll collect from.</p>
+            ) : !ready && total > 0 && !phoneOk ? (
                 <p className="hint center" style={{ marginTop: 0 }}>Enter a 10-digit mobile number.</p>
             ) : !ready && total > 0 && phoneOk && missing.length > 0 ? (
                 <p className="hint center" style={{ marginTop: 0 }}>
@@ -324,6 +355,29 @@ export default function BookSheet({
                 <p className="small muted">Couldn&apos;t load this canteen. Check your connection and try again.</p>
             ) : (
                 <>
+                    {/* ---- which outlet ----
+                        First, because it decides where the food is and where
+                        the pass will be accepted. A plain dropdown: the list is
+                        the canteen's own, however long it is. */}
+                    {outlets.length > 0 && (
+                        <div style={{ marginBottom: 12 }}>
+                            <label className="label" htmlFor="book-outlet">Outlet</label>
+                            <select id="book-outlet" className="select" value={outletId}
+                                onChange={(e) => setOutletId(e.target.value)}>
+                                <option value="">Choose an outlet…</option>
+                                {outlets.map((o) => (
+                                    <option key={o.id} value={o.id}>
+                                        {o.name}{o.description ? ` — ${o.description}` : ""}
+                                    </option>
+                                ))}
+                            </select>
+                            {outlet?.addressLine && <span className="hint">{outlet.addressLine}</span>}
+                            {!outlet && (
+                                <span className="hint">Your pass will only be accepted at the outlet you choose.</span>
+                            )}
+                        </div>
+                    )}
+
                     {/* ---- which day, and which meal ---- */}
                     <div className="chip-row">
                         {quick.map((x) => (

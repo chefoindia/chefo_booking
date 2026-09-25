@@ -14,6 +14,7 @@ const Business = require("../models/Business");
 const BusinessUser = require("../models/BusinessUser");
 const MealType = require("../models/MealType");
 const MealVariant = require("../models/MealVariant");
+const Outlet = require("../models/Outlet");
 
 const SLUG = process.env.SEED_BUSINESS_SLUG || "demo-canteen";
 const OWNER_EMAIL = process.env.SEED_OWNER_EMAIL || "owner@demo.test";
@@ -38,6 +39,12 @@ const VARIANTS = [
     { name: "Jain", key: "jain", price: 0, sortOrder: 2 },
     { name: "Special Thali", key: "special-thali", price: 0, sortOrder: 3 },
 ];
+
+// Outlets are OPTIONAL and come from the environment, never from code: a
+// business with none books exactly as before, and the moment it has one every
+// new booking must name one. Set SEED_OUTLETS="Main Cafeteria,Block A" to
+// seed some for the demo business.
+const OUTLETS = String(process.env.SEED_OUTLETS || "").split(",").map((s) => s.trim()).filter(Boolean);
 
 (async () => {
     await connectDB();
@@ -72,6 +79,14 @@ const VARIANTS = [
         if (existing) { console.log(`  option "${v.name}" already exists`); continue; }
         await MealVariant.create({ businessId: business._id, ...v });
         console.log(`  + option "${v.name}"`);
+    }
+
+    for (const [i, name] of OUTLETS.entries()) {
+        const key = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+        const existing = await Outlet.findOne({ businessId: business._id, key });
+        if (existing) { console.log(`  outlet "${name}" already exists`); continue; }
+        await Outlet.create({ businessId: business._id, name, key, sortOrder: i });
+        console.log(`  + outlet "${name}"`);
     }
 
     let owner = await BusinessUser.findOne({ businessId: business._id, isOwner: true });

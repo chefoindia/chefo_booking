@@ -21,6 +21,11 @@ import Empty from "@/components/Empty";
 import { SkeletonTiles, SkeletonTable } from "@/components/Skeleton";
 import { downloadFromApi } from "@/lib/download";
 import { openDoc, table, heading, tiles, closeDoc, rs } from "@/lib/pdf";
+import OutletScopeLine from "@/components/OutletScopeLine";
+
+// Every report carries the top bar's outlet, so a printed sheet describes
+// exactly what the screen showed. The server enforces the scope either way.
+const withOutlet = (qs, access) => (access.outlet ? `${qs}&outletId=${encodeURIComponent(access.outlet)}` : qs);
 
 const TABS = [["day", "Day sheet"], ["summary", "Period summary"], ["bookings", "Bookings export"]];
 
@@ -34,20 +39,21 @@ export default function ReportsPage() {
                 <div>
                     <h1 className="page-title">Reports</h1>
                     <p className="page-sub">Kitchen sheets and summaries, as PDF or CSV. Counts are confirmed bookings only; pending requests are shown separately and never added in.</p>
+                    <OutletScopeLine />
                 </div>
             </div>
             <div className="row wrap" style={{ marginBottom: 14 }}>
                 {TABS.map(([k, l]) => <button key={k} className={`btn btn-sm ${tab === k ? "btn-primary" : "btn-secondary"}`} onClick={() => setTab(k)}>{l}</button>)}
             </div>
-            {tab === "day" && <DaySheet canExport={canExport} business={access.business} />}
-            {tab === "summary" && <Summary canExport={canExport} business={access.business} />}
-            {tab === "bookings" && <BookingsExport canExport={canExport} />}
+            {tab === "day" && <DaySheet canExport={canExport} business={access.business} access={access} />}
+            {tab === "summary" && <Summary canExport={canExport} business={access.business} access={access} />}
+            {tab === "bookings" && <BookingsExport canExport={canExport} access={access} />}
         </div>
     );
 }
 
 /* ------------------------------------------------------------------ */
-function DaySheet({ canExport, business }) {
+function DaySheet({ canExport, business, access }) {
     const toast = useToast();
     const [date, setDate] = useState(todayKey());
     const [data, setData] = useState(null);
@@ -55,14 +61,14 @@ function DaySheet({ canExport, business }) {
 
     const load = useCallback(async () => {
         setLoading(true);
-        try { setData(await get(`/api/reports/day?date=${date}`)); }
+        try { setData(await get(withOutlet(`/api/reports/day?date=${date}`, access))); }
         catch (e) { toast("error", "Couldn't load the day", e.message); }
         finally { setLoading(false); }
-    }, [date, toast]);
+    }, [date, access.outlet, toast]); // eslint-disable-line react-hooks/exhaustive-deps
     useEffect(() => { load(); }, [load]);
 
     const pdf = async () => {
-        const doc = openDoc({ business, title: "Kitchen sheet", subtitle: data.dateLabel });
+        const doc = openDoc({ business, title: data.outlet ? `Kitchen sheet — ${data.outlet.name}` : "Kitchen sheet", subtitle: data.dateLabel });
         tiles(doc, [
             { label: "Meals to prepare", value: data.totals.confirmedQuantity },
             { label: "Confirmed bookings", value: data.totals.bookings },
@@ -82,9 +88,10 @@ function DaySheet({ canExport, business }) {
             const confirmed = s.bookings.filter((b) => b.status === "confirmed");
             if (confirmed.length) {
                 table(doc, {
-                    head: ["Ref", "Customer", "Mobile", "Organisation", "Breakdown", "Qty", "Note"],
+                    head: ["Ref", "Customer", "Mobile", "Organisation", ...(data.outlet ? [] : ["Outlet"]), "Breakdown", "Qty", "Note"],
                     body: confirmed.map((b) => [
                         b.reference, b.partySnapshot?.name || "", prettyPhone(b.partySnapshot?.phone), b.partySnapshot?.organisation || "",
+                        ...(data.outlet ? [] : [b.outletName || "—"]),
                         b.lines.map((l) => `${l.quantity} ${l.variantName}`).join(", "), String(b.totalQuantity), b.customerNote || "",
                     ]),
                     compact: true,
@@ -101,12 +108,13 @@ function DaySheet({ canExport, business }) {
                 });
             }
         }
-        await closeDoc(doc, `kitchen-sheet-${data.date}.pdf`, { what: "the day sheet", details: { Date: data.date, Meals: data.totals.confirmedQuantity } });
+        await closeDoc(doc, `kitchen-sheet-${data.date}${data.outlet ? `-${data.outlet.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}` : ""}.pdf`,
+            { what: "the day sheet", details: { Date: data.date, Meals: data.totals.confirmedQuantity, ...(data.outlet ? { Outlet: data.outlet.name } : {}) } });
         toast("success", "PDF downloaded", `Kitchen sheet for ${data.dateLabel}.`);
     };
 
     const csv = async () => {
-        try { await downloadFromApi(`/api/reports/day.csv?date=${date}`, `bookings-${date}.csv`); toast("success", "CSV downloaded", `Bookings for ${formatDate(date)}.`); }
+        try { await downloadFromApi(withOutlet(`/api/reports/day.csv?date=${date}`, access), `bookings-${date}.csv`); toast("success", "CSV downloaded", `Bookings for ${formatDate(date)}.`); }
         catch (e) { toast("error", "Couldn't export", e.message); }
     };
 
@@ -157,12 +165,13 @@ function DaySheet({ canExport, business }) {
                                 {s.bookings.length > 0 && (
                                     <div className="table-wrap">
                                         <table className="tbl">
-                                            <thead><tr><th>Ref</th><th>Customer</th><th>Breakdown</th><th className="num">Qty</th><th className="num">Amount</th><th>Status</th></tr></thead>
+                                            <thead><tr><th>Ref</th><th>Customer</th>{!data.outlet && access.outlets.length > 0 && <th>Outlet</th>}<th>Breakdown</th><th className="num">Qty</th><th className="num">Amount</th><th>Status</th></tr></thead>
                                             <tbody>
                                                 {s.bookings.map((b) => (
                                                     <tr key={b._id} style={{ opacity: b.status === "confirmed" ? 1 : 0.6 }}>
                                                         <td className="mono small">{b.reference}</td>
                                                         <td><div style={{ fontWeight: 600 }}>{b.partySnapshot?.name}</div><div className="xsmall faint">{prettyPhone(b.partySnapshot?.phone)}{b.partySnapshot?.organisation ? ` · ${b.partySnapshot.organisation}` : ""}</div></td>
+                                                        {!data.outlet && access.outlets.length > 0 && <td className="small">{b.outletName || <span className="faint">—</span>}</td>}
                                                         <td className="small muted">{b.lines.map((l) => `${l.quantity} ${l.variantName}`).join(" · ")}</td>
                                                         <td className="num">{b.totalQuantity}</td>
                                                         <td className="num">{b.totalAmount ? `₹${b.totalAmount}` : "—"}</td>
@@ -182,7 +191,7 @@ function DaySheet({ canExport, business }) {
 }
 
 /* ------------------------------------------------------------------ */
-function Summary({ canExport, business }) {
+function Summary({ canExport, business, access }) {
     const toast = useToast();
     const [range, setRange] = useState({ from: shiftDate(todayKey(), -6), to: todayKey() });
     const [data, setData] = useState(null);
@@ -190,16 +199,16 @@ function Summary({ canExport, business }) {
 
     const load = useCallback(async () => {
         setLoading(true);
-        try { setData(await get(`/api/reports/summary?from=${range.from}&to=${range.to}`)); }
+        try { setData(await get(withOutlet(`/api/reports/summary?from=${range.from}&to=${range.to}`, access))); }
         catch (e) { toast("error", "Couldn't load the summary", e.message); setData(null); }
         finally { setLoading(false); }
-    }, [range, toast]);
+    }, [range, access.outlet, toast]); // eslint-disable-line react-hooks/exhaustive-deps
     useEffect(() => { load(); }, [load]);
 
     const preset = (days) => setRange({ from: shiftDate(todayKey(), -(days - 1)), to: todayKey() });
 
     const pdf = async () => {
-        const doc = openDoc({ business, title: "Booking summary", subtitle: `${formatDate(data.from, { year: true })} – ${formatDate(data.to, { year: true })}`, orientation: "landscape" });
+        const doc = openDoc({ business, title: data.outlet ? `Booking summary — ${data.outlet.name}` : "Booking summary", subtitle: `${formatDate(data.from, { year: true })} – ${formatDate(data.to, { year: true })}`, orientation: "landscape" });
         tiles(doc, [
             { label: "Meals confirmed", value: data.totals.quantity },
             { label: "Bookings", value: data.totals.bookings },
@@ -219,7 +228,7 @@ function Summary({ canExport, business }) {
         toast("success", "PDF downloaded", "Period summary.");
     };
     const csv = async () => {
-        try { await downloadFromApi(`/api/reports/bookings.csv?from=${range.from}&to=${range.to}`, "bookings.csv"); toast("success", "CSV downloaded", "Every booking in the period."); }
+        try { await downloadFromApi(withOutlet(`/api/reports/bookings.csv?from=${range.from}&to=${range.to}`, access), "bookings.csv"); toast("success", "CSV downloaded", "Every booking in the period."); }
         catch (e) { toast("error", "Couldn't export", e.message); }
     };
 
@@ -276,7 +285,7 @@ function Summary({ canExport, business }) {
 }
 
 /* ------------------------------------------------------------------ */
-function BookingsExport({ canExport }) {
+function BookingsExport({ canExport, access }) {
     const toast = useToast();
     const [f, setF] = useState({ from: shiftDate(todayKey(), -29), to: todayKey(), mealTypeId: "", status: "", q: "" });
     const [config, setConfig] = useState({ mealTypes: [] });
@@ -286,6 +295,7 @@ function BookingsExport({ canExport }) {
         try {
             const qs = new URLSearchParams();
             Object.entries(f).forEach(([k, v]) => { if (v) qs.set(k, v); });
+            if (access.outlet) qs.set("outletId", access.outlet);
             await downloadFromApi(`/api/reports/bookings.csv?${qs}`, "bookings.csv");
             toast("success", "CSV downloaded", "One row per booking, one column per option.");
         } catch (e) { toast("error", "Couldn't export", e.message); }

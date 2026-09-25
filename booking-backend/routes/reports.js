@@ -26,6 +26,16 @@ const { record } = require("../services/audit");
 const { notify, CONCERN } = require("../services/notify");
 const { normalisePhone } = require("../utils/phone");
 const { sendCsv } = require("../utils/csv");
+const { scopedOutletMatch, outletSelection } = require("../utils/outletScope");
+const Outlet = require("../models/Outlet");
+
+// The outlet a report describes, for its heading — null for the whole canteen.
+async function outletHeading(req, requested) {
+    const r = String(requested || "").trim();
+    if (!r || r === "unassigned") return r === "unassigned" ? { id: null, name: "Unassigned (before outlets)" } : null;
+    const o = await Outlet.findOne({ _id: r, businessId: req.businessId }).select("name").lean();
+    return o ? { id: o._id, name: o.name } : null;
+}
 
 const isId = (v) => mongoose.Types.ObjectId.isValid(String(v));
 const meta = (req) => ({ ip: req.ip, userAgent: req.headers["user-agent"] || "" });
@@ -65,12 +75,17 @@ router.get("/api/reports/day",
             const tz = business.timezoneOffsetMinutes ?? 330;
             const date = isDateKey(req.query.date) ? req.query.date : todayKey(tz);
 
-            const [mealTypes, variants, confirmed, bookings, pending] = await Promise.all([
+            const om = await scopedOutletMatch(req, req.query.outletId);
+            if (!om.ok) return next(om.error);
+            const outlet = outletSelection(req.outletScope, req.query.outletId);
+
+            const [mealTypes, variants, confirmed, bookings, pending, outletInfo] = await Promise.all([
                 MealType.find({ businessId: req.businessId }).sort({ sortOrder: 1, name: 1 }).lean(),
                 MealVariant.find({ businessId: req.businessId }).sort({ sortOrder: 1, name: 1 }).lean(),
-                confirmedTotalsByMeal({ businessId: req.businessId, date }),
-                Booking.find({ businessId: req.businessId, date }).sort({ mealTypeId: 1, "partySnapshot.name": 1 }).lean(),
-                BookingRequest.find({ businessId: req.businessId, date, status: "pending" }).lean(),
+                confirmedTotalsByMeal({ businessId: req.businessId, date, outlet }),
+                Booking.find({ businessId: req.businessId, date, ...om.match }).sort({ mealTypeId: 1, "partySnapshot.name": 1 }).lean(),
+                BookingRequest.find({ businessId: req.businessId, date, status: "pending", ...om.match }).lean(),
+                outletHeading(req, req.query.outletId),
             ]);
 
             const now = new Date();
@@ -91,6 +106,7 @@ router.get("/api/reports/day",
 
             res.json({
                 business: { name: business.name, addressLine: business.addressLine, city: business.city, contactPhone: business.contactPhone },
+                outlet: outletInfo,
                 date, dateLabel: formatDateKey(date), generatedAt: now,
                 services,
                 totals: {
@@ -110,18 +126,20 @@ router.get("/api/reports/day.csv",
             const business = await Business.findById(req.businessId).select("timezoneOffsetMinutes").lean();
             const tz = business.timezoneOffsetMinutes ?? 330;
             const date = isDateKey(req.query.date) ? req.query.date : todayKey(tz);
+            const om = await scopedOutletMatch(req, req.query.outletId);
+            if (!om.ok) return next(om.error);
             const [mealTypes, variants, bookings] = await Promise.all([
                 MealType.find({ businessId: req.businessId }).sort({ sortOrder: 1 }).lean(),
                 MealVariant.find({ businessId: req.businessId }).sort({ sortOrder: 1 }).lean(),
-                Booking.find({ businessId: req.businessId, date }).sort({ mealTypeId: 1, status: 1, "partySnapshot.name": 1 }).lean(),
+                Booking.find({ businessId: req.businessId, date, ...om.match }).sort({ outletName: 1, mealTypeId: 1, status: 1, "partySnapshot.name": 1 }).lean(),
             ]);
             const mealName = new Map(mealTypes.map((m) => [String(m._id), m.name]));
-            const csv = [["Date", "Meal service", "Reference", "Customer", "Mobile", "Organisation", "Type",
+            const csv = [["Date", "Outlet", "Meal service", "Reference", "Customer", "Mobile", "Organisation", "Type",
                 ...variants.map((v) => v.name), "Total meals", "Amount (₹)", "Status", "Source", "After cutoff", "Note", "Booked at (IST)"]];
             for (const b of bookings) {
                 const qty = Object.fromEntries((b.lines || []).map((l) => [String(l.variantId), l.quantity]));
                 csv.push([
-                    b.date, mealName.get(String(b.mealTypeId)) || b.mealTypeName, b.reference,
+                    b.date, b.outletName || "", mealName.get(String(b.mealTypeId)) || b.mealTypeName, b.reference,
                     b.partySnapshot?.name, b.partySnapshot?.phone, b.partySnapshot?.organisation, b.partySnapshot?.partyType,
                     ...variants.map((v) => qty[String(v._id)] || 0),
                     b.totalQuantity, b.totalAmount || 0, b.status, b.source, b.submittedAfterCutoff ? "yes" : "no",
@@ -145,11 +163,14 @@ router.get("/api/reports/summary",
             const r = rangeOf(req, tz);
             if (r.error) return res.status(400).json({ message: r.error });
 
-            const [mealTypes, variants, rows, pendingRows] = await Promise.all([
+            const om = await scopedOutletMatch(req, req.query.outletId);
+            if (!om.ok) return next(om.error);
+
+            const [mealTypes, variants, rows, pendingRows, outletInfo] = await Promise.all([
                 MealType.find({ businessId: req.businessId }).sort({ sortOrder: 1 }).lean(),
                 MealVariant.find({ businessId: req.businessId }).sort({ sortOrder: 1 }).lean(),
                 Booking.aggregate([
-                    { $match: { businessId: oid(req.businessId), date: { $gte: r.from, $lte: r.to }, status: "confirmed" } },
+                    { $match: { businessId: oid(req.businessId), date: { $gte: r.from, $lte: r.to }, status: "confirmed", ...om.match } },
                     { $unwind: "$lines" },
                     {
                         $group: {
@@ -162,9 +183,10 @@ router.get("/api/reports/summary",
                     },
                 ]),
                 BookingRequest.aggregate([
-                    { $match: { businessId: oid(req.businessId), date: { $gte: r.from, $lte: r.to } } },
+                    { $match: { businessId: oid(req.businessId), date: { $gte: r.from, $lte: r.to }, ...om.match } },
                     { $group: { _id: { date: "$date", mealTypeId: "$mealTypeId", status: "$status" }, n: { $sum: 1 } } },
                 ]),
+                outletHeading(req, req.query.outletId),
             ]);
 
             // date -> mealTypeId -> { byVariant, totalQuantity, amount, bookings:Set }
@@ -219,7 +241,7 @@ router.get("/api/reports/summary",
             }
 
             res.json({
-                business: { name: business.name }, from: r.from, to: r.to, days: r.days,
+                business: { name: business.name }, outlet: outletInfo, from: r.from, to: r.to, days: r.days,
                 mealTypes: mealTypes.map((m) => ({ id: m._id, name: m.name })),
                 variants: variants.map((v) => ({ id: v._id, name: v.name })),
                 rows: days,
@@ -246,6 +268,9 @@ router.get("/api/reports/bookings.csv",
             if (r.error) return res.status(400).json({ message: r.error });
 
             const filter = { businessId: req.businessId, date: { $gte: r.from, $lte: r.to } };
+            const om = await scopedOutletMatch(req, req.query.outletId);
+            if (!om.ok) return next(om.error);
+            Object.assign(filter, om.match);
             if (isId(req.query.mealTypeId)) filter.mealTypeId = req.query.mealTypeId;
             if (req.query.status) {
                 const wanted = String(req.query.status).split(",").map((s) => s.trim()).filter(Boolean);
@@ -265,12 +290,12 @@ router.get("/api/reports/bookings.csv",
                 Booking.find(filter).sort({ date: 1, mealTypeId: 1, createdAt: 1 }).limit(10000).lean(),
             ]);
             const mealName = new Map(mealTypes.map((m) => [String(m._id), m.name]));
-            const csv = [["Date", "Meal service", "Reference", "Customer", "Mobile", "Organisation", "Type",
+            const csv = [["Date", "Outlet", "Meal service", "Reference", "Customer", "Mobile", "Organisation", "Type",
                 ...variants.map((v) => v.name), "Total meals", "Amount (₹)", "Status", "Source", "After cutoff", "Location", "Note", "Booked at (IST)"]];
             for (const b of bookings) {
                 const qty = Object.fromEntries((b.lines || []).map((l) => [String(l.variantId), l.quantity]));
                 csv.push([
-                    b.date, mealName.get(String(b.mealTypeId)) || b.mealTypeName, b.reference,
+                    b.date, b.outletName || "", mealName.get(String(b.mealTypeId)) || b.mealTypeName, b.reference,
                     b.partySnapshot?.name, b.partySnapshot?.phone, b.partySnapshot?.organisation, b.partySnapshot?.partyType,
                     ...variants.map((v) => qty[String(v._id)] || 0),
                     b.totalQuantity, b.totalAmount || 0, b.status, b.source, b.submittedAfterCutoff ? "yes" : "no",

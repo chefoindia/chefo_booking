@@ -22,6 +22,7 @@ const { authenticate, requirePermission, requireAnyPermission } = require("../mi
 const { cutoffState, isDateKey } = require("../utils/time");
 const { normalisePhone } = require("../utils/phone");
 const { notify } = require("../services/notify");
+const { scopedOutletMatch, outletSelection, assertBookingInScope } = require("../utils/outletScope");
 
 const meta = (req) => ({ ip: req.ip, userAgent: req.headers["user-agent"] || "" });
 const isId = (v) => mongoose.Types.ObjectId.isValid(String(v));
@@ -40,11 +41,22 @@ router.get("/api/bookings",
     async (req, res, next) => {
         try {
             const {
-                date, from, to, mealTypeId, status, partyId, partyType, q,
+                date, from, to, mealTypeId, status, partyId, partyType, q, served, outletId,
                 page = "1", limit = "50",
             } = req.query;
 
             const filter = { businessId: req.businessId };
+
+            // OUTLET: what was asked for, narrowed to what this user may see.
+            // A restricted user asking for nothing gets their outlets; asking
+            // for someone else's outlet is refused, not silently emptied.
+            const om = await scopedOutletMatch(req, outletId);
+            if (!om.ok) return next(om.error);
+            Object.assign(filter, om.match);
+            // Handover state — "who still hasn't collected" is a different
+            // question from "what is confirmed", and the counter asks both.
+            if (served === "yes") filter.consumedAt = { $ne: null };
+            else if (served === "no") filter.consumedAt = null;
 
             if (isDateKey(date)) filter.date = date;
             else if (isDateKey(from) || isDateKey(to)) {
@@ -161,6 +173,12 @@ router.get("/api/bookings/by-ticket/:ticket",
             if (!booking) {
                 return res.status(404).json({ message: "That ticket doesn't match a booking here.", code: "NO_TICKET" });
             }
+            // A ticket from another OUTLET of this business is a refusal, not
+            // a miss: the counter is told which outlet it belongs to, so the
+            // customer can be sent to the right one. The outlet comes from the
+            // booking row and the staff member's own scope — ?outletId only
+            // says where the scanner is standing, and can only narrow.
+            await assertBookingInScope({ scope: req.outletScope, booking, scanOutletId: req.query.outletId, businessId: req.businessId });
             res.json(await detailPayload(req.businessId, booking));
         } catch (err) { next(err); }
     });
@@ -179,6 +197,7 @@ router.get("/api/bookings/by-reference/:reference",
             if (!booking) {
                 return res.status(404).json({ message: "No booking here has that reference.", code: "NO_BOOKING" });
             }
+            await assertBookingInScope({ scope: req.outletScope, booking, scanOutletId: req.query.outletId, businessId: req.businessId });
             res.json(await detailPayload(req.businessId, booking));
         } catch (err) { next(err); }
     });
@@ -194,6 +213,7 @@ router.get("/api/bookings/:id",
 
             const booking = await Booking.findOne({ _id: req.params.id, businessId: req.businessId }).lean();
             if (!booking) return res.status(404).json({ message: "Booking not found." });
+            await assertBookingInScope({ scope: req.outletScope, booking, scanOutletId: req.query.outletId, businessId: req.businessId });
 
             res.json(await detailPayload(req.businessId, booking));
         } catch (err) { next(err); }
@@ -208,12 +228,15 @@ router.post("/api/bookings",
     authenticate, requirePermission("bookings.create"),
     async (req, res, next) => {
         try {
-            const { mealTypeId, date, quantities, party, customerNote, location, answers } = req.body || {};
+            const { mealTypeId, date, quantities, party, customerNote, location, answers, outletId } = req.body || {};
             const { booking, cutoff } = await bookingService.createBooking({
                 businessId: req.businessId,
                 mealTypeId, date, quantities,
                 party: party || {},
                 customerNote,
+                // Validated in the domain: must be this business's, active,
+                // and inside the operator's own outlet scope.
+                outletId, outletScope: req.outletScope,
                 // The counter records the same business-defined answers the public
                 // form collects; only the REQUIRED rule is relaxed for operators.
                 answers, location,
@@ -239,6 +262,7 @@ router.patch("/api/bookings/:id",
                 customerNote: req.body?.note,
                 actor: req.actor,
                 byOperator: true,
+                outletScope: req.outletScope,
                 requestMeta: meta(req),
             });
             res.json({ booking });
@@ -255,6 +279,7 @@ router.post("/api/bookings/:id/cancel",
                 reason: req.body?.reason,
                 actor: req.actor,
                 byOperator: true,
+                outletScope: req.outletScope,
                 requestMeta: meta(req),
             });
             notify("bookings.cancelled", {
@@ -265,6 +290,7 @@ router.post("/api/bookings/:id/cancel",
                     { label: "Reference", value: booking.reference },
                     { label: "Customer", value: booking.partySnapshot?.name || "" },
                     { label: "Meal", value: `${booking.mealTypeName} · ${booking.date}` },
+                    ...(booking.outletName ? [{ label: "Outlet", value: booking.outletName }] : []),
                     { label: "Meals removed", value: String(booking.totalQuantity) },
                     { label: "Reason", value: String(req.body?.reason || "—") },
                 ],
@@ -290,6 +316,10 @@ router.post("/api/bookings/:id/consume",
                 bookingId: req.params.id,
                 via: req.body?.via,
                 note: req.body?.note,
+                // The staff member's restriction comes from their record; the
+                // outlet the counter says it is at may only narrow it.
+                outletScope: req.outletScope,
+                scanOutletId: req.body?.outletId,
                 actor: req.actor,
                 requestMeta: meta(req),
             });
@@ -306,6 +336,8 @@ router.post("/api/bookings/:id/unconsume",
                 businessId: req.businessId,
                 bookingId: req.params.id,
                 note: req.body?.note,
+                outletScope: req.outletScope,
+                scanOutletId: req.body?.outletId,
                 actor: req.actor,
                 requestMeta: meta(req),
             });
@@ -331,12 +363,16 @@ router.get("/api/bookings/service/:mealTypeId/:date",
             const mealType = await MealType.findOne({ _id: mealTypeId, businessId: req.businessId }).lean();
             if (!mealType) return res.status(404).json({ message: "Meal service not found." });
 
+            const om = await scopedOutletMatch(req, req.query.outletId);
+            if (!om.ok) return next(om.error);
+            const outlet = outletSelection(req.outletScope, req.query.outletId);
+
             const [totals, variants, bookings, pendingRequests, business] = await Promise.all([
-                confirmedTotals({ businessId: req.businessId, date, mealTypeId }),
+                confirmedTotals({ businessId: req.businessId, date, mealTypeId, outlet }),
                 MealVariant.find({ businessId: req.businessId }).sort({ sortOrder: 1, name: 1 }).lean(),
-                Booking.find({ businessId: req.businessId, date, mealTypeId })
+                Booking.find({ businessId: req.businessId, date, mealTypeId, ...om.match })
                     .sort({ "partySnapshot.name": 1 }).lean(),
-                BookingRequest.find({ businessId: req.businessId, date, mealTypeId, status: "pending" }).lean(),
+                BookingRequest.find({ businessId: req.businessId, date, mealTypeId, status: "pending", ...om.match }).lean(),
                 Business.findById(req.businessId).select("timezoneOffsetMinutes").lean(),
             ]);
 
@@ -347,6 +383,7 @@ router.get("/api/bookings/service/:mealTypeId/:date",
             res.json({
                 mealType,
                 date,
+                outletId: req.query.outletId || null,
                 cutoff: cutoffState(mealType, date, { offsetMinutes: business?.timezoneOffsetMinutes ?? 330 }),
                 confirmed: {
                     byVariant: orderVariants(totals.byVariant, relevant),

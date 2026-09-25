@@ -48,6 +48,7 @@ export default function BookingQr({
 
     const src = ticket ? `${API_URL}/api/public/t/${encodeURIComponent(ticket)}/qr.png` : "";
     const meal = booking?.mealTypeName || "";
+    const outlet = booking?.outletName || "";
     const when = booking?.date ? formatDate(booking.date, { year: true }) : "";
     const count = Number(booking?.totalQuantity) || 0;
 
@@ -63,7 +64,7 @@ export default function BookingQr({
     if (!ticket) {
         return (
             <div className="pass">
-                <PassHead businessName={businessName} meal={meal} when={when} count={count} />
+                <PassHead businessName={businessName} meal={meal} when={when} count={count} outlet={outlet} />
                 <div className="pass-body">
                     <div className="notice" style={{ marginBottom: 10 }}>
                         This booking has no scannable code. Read the reference out at the counter.
@@ -77,7 +78,7 @@ export default function BookingQr({
 
     return (
         <div className="pass">
-            <PassHead businessName={businessName} meal={meal} when={when} count={count} />
+            <PassHead businessName={businessName} meal={meal} when={when} count={count} outlet={outlet} />
 
             <div className="pass-body">
                 {state === "broken" ? (
@@ -117,7 +118,7 @@ export default function BookingQr({
                 <div className="pass-full" onClick={() => setBig(false)} role="dialog" aria-modal="true">
                     <div className="pass-full-top">
                         <strong>{meal || "Your booking"}</strong>
-                        <span>{[businessName, when].filter(Boolean).join(" · ")}</span>
+                        <span>{[businessName, outlet, when].filter(Boolean).join(" · ")}</span>
                     </div>
                     <img className="pass-full-img" src={src} alt={`QR code for booking ${reference || ""}`} />
                     <div className="mono pass-full-ref">{reference}</div>
@@ -145,6 +146,10 @@ export default function BookingQr({
                 font-family: var(--font-display), sans-serif; font-weight: 700; font-size: 16px;
               }
               .pass-head .when { font-size: 12px; opacity: .9; }
+              .pass-head .outlet {
+                display: inline-block; margin-top: 5px; padding: 2px 9px; border-radius: 999px;
+                background: rgba(255,255,255,.18); font-size: 12px; font-weight: 600;
+              }
               .pass-body { padding: 14px; }
               .pass-tap {
                 border: 1px solid var(--border); background: #fff; border-radius: var(--radius);
@@ -191,7 +196,7 @@ export default function BookingQr({
     );
 }
 
-function PassHead({ businessName, meal, when, count }) {
+function PassHead({ businessName, meal, when, count, outlet = "" }) {
     return (
         <div className="pass-head">
             {businessName && <div className="biz">{businessName}</div>}
@@ -200,6 +205,8 @@ function PassHead({ businessName, meal, when, count }) {
                 {count > 0 ? ` · ${count} meal${count === 1 ? "" : "s"}` : ""}
             </div>
             {when && <div className="when">{when}</div>}
+            {/* Where to collect — the counter checks this before anything. */}
+            {outlet && <div className="outlet">Collect at {outlet}</div>}
         </div>
     );
 }

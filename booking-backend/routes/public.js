@@ -29,6 +29,7 @@ const Booking = require("../models/Booking");
 const BookingParty = require("../models/BookingParty");
 const BookingRequest = require("../models/BookingRequest");
 const WeeklyMenu = require("../models/WeeklyMenu");
+const Outlet = require("../models/Outlet");
 
 const bookingService = require("../services/bookingService");
 const { cutoffState, todayKey, shiftDateKey, isDateKey, weekdayOf } = require("../utils/time");
@@ -80,12 +81,17 @@ router.get("/api/public/business/:slug", async (req, res, next) => {
         // The weekly menu for whichever weekday this date falls on — what the
         // customer is actually choosing between, shown under each option.
         const weekday = weekdayOf(date);
-        const [mealTypes, variants, menus] = await Promise.all([
+        const [mealTypes, variants, menus, outlets] = await Promise.all([
             MealType.find({ businessId: business._id, active: true, customerBookable: true })
                 .sort({ sortOrder: 1, name: 1 }).lean(),
             MealVariant.find({ businessId: business._id, active: true })
                 .sort({ sortOrder: 1, name: 1 }).lean(),
             WeeklyMenu.find({ businessId: business._id, weekday }).lean(),
+            // Only ACTIVE outlets ever reach the customer: a deactivated one
+            // is not selectable for a new booking, full stop. The list is
+            // whatever this business created — nothing is hardcoded.
+            Outlet.find({ businessId: business._id, active: true })
+                .sort({ sortOrder: 1, name: 1 }).lean(),
         ]);
         const menuByMeal = new Map(menus.map((m) => [String(m.mealTypeId), m]));
 
@@ -113,6 +119,15 @@ router.get("/api/public/business/:slug", async (req, res, next) => {
             today,
             weekday,
             maxDate: shiftDateKey(today, business.rules?.maxDaysAhead ?? 14),
+            // The outlet step of the form. `outletRequired` is the server's
+            // word on whether a booking here must name one — true the moment
+            // the business has any active outlet — so the form insists on
+            // exactly what the domain will insist on.
+            outlets: outlets.map((o) => ({
+                id: o._id, name: o.name, key: o.key,
+                description: o.description || "", addressLine: o.addressLine || "",
+            })),
+            outletRequired: outlets.length > 0,
             mealTypes: mealTypes.map((m) => {
                 const menu = menuByMeal.get(String(m._id));
                 const dishesFor = (variantId) =>
@@ -147,13 +162,16 @@ router.get("/api/public/business/:slug", async (req, res, next) => {
 router.post("/api/public/business/:slug/bookings", publicWriteLimiter, async (req, res, next) => {
     try {
         const business = await loadBusiness(req.params.slug);
-        const { mealTypeId, date, quantities, party, customerNote, location, answers } = req.body || {};
+        const { mealTypeId, date, quantities, party, customerNote, location, answers, outletId } = req.body || {};
 
         const { booking, request, cutoff } = await bookingService.createBooking({
             businessId: business._id,
             mealTypeId, date, quantities,
             party: party || {},
             customerNote, location,
+            // Which outlet. The domain checks it belongs to THIS business, is
+            // active, and is present whenever the business has outlets.
+            outletId,
             // Passed straight to the domain, which validates them against this
             // business's configured questions. The route deliberately knows
             // nothing about what a valid answer is.
@@ -461,6 +479,11 @@ function shapeForCustomer(b) {
         date: b.date,
         mealTypeId: b.mealTypeId,
         mealTypeName: b.mealTypeName,
+        // Which outlet this booking is for, from the row's own snapshot, so
+        // the pass and the list can say where to go. null/"" for a booking
+        // made before this business had outlets.
+        outletId: b.outletId || null,
+        outletName: b.outletName || "",
         status: b.status,
         lines: (b.lines || []).map((l) => ({
             variantId: l.variantId, variantName: l.variantName, quantity: l.quantity,

@@ -21,6 +21,7 @@ const Booking = require("../models/Booking");
 const BookingRequest = require("../models/BookingRequest");
 const BookingParty = require("../models/BookingParty");
 const AuditLog = require("../models/AuditLog");
+const Outlet = require("../models/Outlet");
 
 const bookingService = require("../services/bookingService");
 const { confirmedTotals } = require("../services/quantity");
@@ -57,6 +58,7 @@ async function main() {
             BusinessUser.deleteMany({ businessId: { $in: staleIds } }),
             Role.deleteMany({ businessId: { $in: staleIds } }),
             AuditLog.deleteMany({ businessId: { $in: staleIds } }),
+            Outlet.deleteMany({ businessId: { $in: staleIds } }),
         ]);
         await Business.deleteMany({ _id: { $in: staleIds } });
     }
@@ -119,6 +121,10 @@ async function main() {
     app.use(require("../routes/config"));
     app.use(require("../routes/team"));
     app.use(require("../routes/customerAccount"));
+    app.use(require("../routes/outlets"));
+    app.use(require("../routes/reports"));
+    app.use(require("../routes/parties"));
+    app.use(require("../routes/audit"));
     app.use(require("../middleware/errors").notFound);
     app.use(require("../middleware/errors").errorHandler);
 
@@ -906,6 +912,311 @@ async function main() {
     });
     check("a forged OTP token cannot create an account", r.status >= 400, String(r.status));
 
+
+    /* ================= SCENARIO Q =================
+       Multi-outlet. One canteen, several serving points. The outlet is a
+       dimension on the booking — chosen once, frozen, enforced by the server
+       at every read and at the counter — never a second tenant and never a
+       frontend filter. */
+    section("Q — outlets: creating them, and they belong to one canteen");
+    const D1 = shiftDays(D, 1);   // a clean date: nothing above booked it
+    const preOutletLunch = (await confirmedTotals({ businessId: business._id, date: D, mealTypeId: lunch._id })).totalQuantity;
+
+    r = await call("GET", `/api/public/business/${SLUG}?date=${D1}`);
+    check("a business with no outlets tells the form none are required", r.data.outletRequired === false && r.data.outlets.length === 0,
+        JSON.stringify({ req: r.data.outletRequired, n: r.data.outlets?.length }));
+
+    const mk = async (name) => (await call("POST", "/api/outlets", { cookie: ownerCookie, body: { name } }));
+    r = await mk("Main Cafeteria");
+    check("owner can create an outlet (201)", r.status === 201 && r.data.outlet?.name === "Main Cafeteria", `${r.status} ${JSON.stringify(r.data).slice(0, 120)}`);
+    const main = r.data.outlet;
+    const blockA = (await mk("Block A")).data.outlet;
+    const blockB = (await mk("Block B")).data.outlet;
+    check("...and several of them", Boolean(blockA?.id && blockB?.id));
+    r = await mk("Block A");
+    check("a duplicate name at the same canteen is refused (409)", r.status === 409, String(r.status));
+
+    const otherOutlet = await Outlet.create({ businessId: otherBusiness._id, name: "Foreign Site", key: "foreign-site" });
+    r = await call("GET", "/api/outlets", { cookie: ownerCookie });
+    check("the owner lists exactly their own three", r.data.outlets?.length === 3 && !r.data.outlets.some((o) => String(o.id) === String(otherOutlet._id)),
+        String(r.data.outlets?.length));
+    check("the list says the scope is canteen-wide", r.data.scope === null);
+    r = await call("PATCH", `/api/outlets/${otherOutlet._id}`, { cookie: ownerCookie, body: { name: "Hijacked" } });
+    check("another canteen's outlet cannot be edited (404)", r.status === 404, String(r.status));
+    check("...and was not touched", (await Outlet.findById(otherOutlet._id).lean()).name === "Foreign Site");
+
+    r = await call("GET", "/api/outlets", { cookie: scanCookie });
+    check("any signed-in staff member can read the outlet list for the selector", r.status === 200 && r.data.outlets.length === 3, String(r.status));
+
+    /* ---- customer booking with an outlet ---- */
+    section("Q — the customer chooses an outlet, and it is stored on the booking");
+    r = await call("GET", `/api/public/business/${SLUG}?date=${D1}`);
+    check("the form is told an outlet is now required", r.data.outletRequired === true && r.data.outlets.length === 3,
+        JSON.stringify({ req: r.data.outletRequired, n: r.data.outlets?.length }));
+    check("the form's outlets carry no operator-only fields", !JSON.stringify(r.data.outlets).includes("createdByUserId"));
+
+    const bookPublic = (outletId, phone, quantities, mealTypeId = snacks._id) => call("POST", `/api/public/business/${SLUG}/bookings`, {
+        body: { mealTypeId: String(mealTypeId), date: D1, quantities, outletId, party: party("Outlet Co", phone), answers: { "employee-id": "E-O" } },
+    });
+    r = await bookPublic(undefined, "9800000201", qty({ [veg._id]: 1 }));
+    check("a booking WITHOUT an outlet is refused once outlets exist", r.status === 400 && r.data.code === "OUTLET_REQUIRED", `${r.status} ${r.data.code}`);
+    r = await bookPublic(String(otherOutlet._id), "9800000201", qty({ [veg._id]: 1 }));
+    check("another canteen's outlet id is not available here (404)", r.status === 404 && r.data.code === "NO_OUTLET", `${r.status} ${r.data.code}`);
+    r = await bookPublic("not-an-id", "9800000201", qty({ [veg._id]: 1 }));
+    check("a garbage outlet id is refused the same way", r.status === 404, String(r.status));
+
+    r = await bookPublic(String(blockA.id), "9800000201", qty({ [veg._id]: 1 }));
+    check("a booking with a valid outlet is accepted (201)", r.status === 201, `${r.status} ${JSON.stringify(r.data).slice(0, 120)}`);
+    const custA = r.data.booking;
+    check("the customer is told which outlet", custA.outletName === "Block A" && String(custA.outletId) === String(blockA.id), JSON.stringify({ n: custA.outletName, id: custA.outletId }));
+    const custARow = await Booking.findById(custA.id).lean();
+    check("the outlet is stored permanently on the booking row", String(custARow.outletId) === String(blockA.id) && custARow.outletName === "Block A");
+
+    r = await call("GET", `/api/public/t/${custA.ticket}`);
+    check("the ticket page names the outlet", r.data.booking?.outletName === "Block A", r.data.booking?.outletName);
+    r = await call("POST", `/api/public/business/${SLUG}/lookup`, { body: { phone: "9800000201" } });
+    check("the phone lookup names the outlet", r.data.bookings?.[0]?.outletName === "Block A");
+
+    /* ---- quantities: overall and per outlet, from the same rows ---- */
+    section("Q — overall and per-outlet quantities aggregate the same bookings");
+    // Lunch on D1 (open — BEFORE is 09:00 on D, and D1 is tomorrow): A gets
+    // veg 3 + non-veg 2, B gets veg 4. Overall must read veg 7 / non-veg 2.
+    const svcBook = (outletId, phone, quantities, extra = {}) => bookingService.createBooking({
+        businessId: business._id, mealTypeId: lunch._id, date: D1, quantities, outletId,
+        party: party("Outlet Lunch", phone), answers: { "employee-id": "E-L" }, now: BEFORE, ...extra,
+    });
+    const a1 = await svcBook(String(blockA.id), "9800000202", qty({ [veg._id]: 3, [nonVeg._id]: 2 }));
+    const b1 = await svcBook(String(blockB.id), "9800000203", qty({ [veg._id]: 4 }));
+    check("service-created bookings carry the outlet", a1.booking.outletName === "Block A" && b1.booking.outletName === "Block B");
+
+    const all = await confirmedTotals({ businessId: business._id, date: D1, mealTypeId: lunch._id });
+    const onlyA = await confirmedTotals({ businessId: business._id, date: D1, mealTypeId: lunch._id, outlet: String(blockA.id) });
+    const onlyB = await confirmedTotals({ businessId: business._id, date: D1, mealTypeId: lunch._id, outlet: String(blockB.id) });
+    check("overall lunch: veg 7, non-veg 2, total 9", all.totalQuantity === 9 && all.byVariant[String(veg._id)].quantity === 7 && all.byVariant[String(nonVeg._id)].quantity === 2,
+        JSON.stringify(all));
+    check("Block A lunch: veg 3, non-veg 2", onlyA.totalQuantity === 5 && onlyA.byVariant[String(veg._id)].quantity === 3, JSON.stringify(onlyA));
+    check("Block B lunch: veg 4, no non-veg", onlyB.totalQuantity === 4 && !onlyB.byVariant[String(nonVeg._id)], JSON.stringify(onlyB));
+    check("outlet totals add up to the overall — nothing counted twice", onlyA.totalQuantity + onlyB.totalQuantity === all.totalQuantity);
+
+    r = await call("GET", `/api/dashboard/today?date=${D1}`, { cookie: ownerCookie });
+    let lunchAll = r.data.services.find((s) => s.key === "lunch");
+    check("dashboard (All outlets) lunch is 9", lunchAll.confirmed.totalQuantity === 9, String(lunchAll.confirmed.totalQuantity));
+    check("dashboard (All outlets) carries a per-outlet breakdown", Array.isArray(r.data.byOutlet) && r.data.byOutlet.length === 3, String(r.data.byOutlet?.length));
+    const lineA = r.data.byOutlet.find((o) => String(o.outletId) === String(blockA.id));
+    const lineB = r.data.byOutlet.find((o) => String(o.outletId) === String(blockB.id));
+    check("breakdown: Block A lunch 5, Block B lunch 4",
+        lineA.services.find((s) => String(s.mealTypeId) === String(lunch._id)).totalQuantity === 5
+        && lineB.services.find((s) => String(s.mealTypeId) === String(lunch._id)).totalQuantity === 4,
+        JSON.stringify({ a: lineA.totalQuantity, b: lineB.totalQuantity }));
+    check("breakdown: Main Cafeteria shows its zero rather than vanishing", r.data.byOutlet.some((o) => String(o.outletId) === String(main.id) && o.totalQuantity === 0));
+    check("no 'unassigned' line on a date with no pre-outlet bookings", !r.data.byOutlet.some((o) => o.outletId === null));
+
+    r = await call("GET", `/api/dashboard/today?date=${D1}&outletId=${blockA.id}`, { cookie: ownerCookie });
+    check("dashboard scoped to Block A: lunch is 5", r.data.services.find((s) => s.key === "lunch").confirmed.totalQuantity === 5,
+        String(r.data.services.find((s) => s.key === "lunch").confirmed.totalQuantity));
+    check("...and it names the outlet it describes", r.data.outlet?.name === "Block A" && String(r.data.outletId) === String(blockA.id));
+    check("...and has no breakdown of its own", r.data.byOutlet === null);
+    r = await call("GET", `/api/dashboard/today?date=${D1}&outletId=${blockB.id}`, { cookie: ownerCookie });
+    check("dashboard scoped to Block B: lunch is 4", r.data.services.find((s) => s.key === "lunch").confirmed.totalQuantity === 4);
+    r = await call("GET", `/api/dashboard/today?date=${D1}&outletId=${otherOutlet._id}`, { cookie: ownerCookie });
+    check("another canteen's outlet on the selector is refused (404, not an empty result)", r.status === 404 && r.data.code === "NO_OUTLET", `${r.status} ${r.data.code}`);
+
+    r = await call("GET", `/api/bookings?date=${D1}&outletId=${blockA.id}`, { cookie: ownerCookie });
+    check("bookings list filtered to Block A shows only its rows", r.data.bookings.length === 2 && r.data.bookings.every((b) => b.outletName === "Block A"), String(r.data.bookings?.length));
+    r = await call("GET", `/api/bookings?date=${D1}`, { cookie: ownerCookie });
+    check("bookings list unfiltered shows every outlet", r.data.bookings.length === 3, String(r.data.bookings?.length));
+    r = await call("GET", `/api/bookings/service/${lunch._id}/${D1}?outletId=${blockB.id}`, { cookie: ownerCookie });
+    check("the kitchen sheet for one outlet uses the same count", r.data.confirmed.totalQuantity === 4 && r.data.bookings.length === 1);
+    r = await call("GET", `/api/reports/day?date=${D1}&outletId=${blockA.id}`, { cookie: ownerCookie });
+    check("the day report scoped to an outlet agrees and names it", r.data.totals.confirmedQuantity === 6 && r.data.outlet?.name === "Block A",
+        JSON.stringify({ q: r.data.totals?.confirmedQuantity, o: r.data.outlet }));
+    r = await call("GET", `/api/reports/summary?from=${D1}&to=${D1}&outletId=${blockB.id}`, { cookie: ownerCookie });
+    check("the period summary scoped to an outlet agrees", r.data.totals.quantity === 4, String(r.data.totals?.quantity));
+
+    /* ---- history from before outlets ---- */
+    section("Q — bookings from before outlets are intact and explicit");
+    const nowLunch = (await confirmedTotals({ businessId: business._id, date: D, mealTypeId: lunch._id })).totalQuantity;
+    check("today's pre-outlet lunch count is unchanged", nowLunch === preOutletLunch, `${nowLunch} vs ${preOutletLunch}`);
+    const legacy = await Booking.countDocuments({ businessId: business._id, date: D, outletId: { $ne: null } });
+    check("no historical booking was silently given an outlet", legacy === 0, String(legacy));
+    r = await call("GET", `/api/dashboard/today?date=${D}`, { cookie: ownerCookie });
+    check("the overall dashboard shows them as an explicit 'unassigned' line", r.data.byOutlet?.some((o) => o.outletId === null && o.totalQuantity > 0),
+        JSON.stringify(r.data.byOutlet?.map((o) => [o.name, o.totalQuantity])));
+    r = await call("GET", `/api/bookings?date=${D}&outletId=unassigned`, { cookie: ownerCookie });
+    check("and they can be listed on their own", r.status === 200 && r.data.bookings.length > 0 && r.data.bookings.every((b) => !b.outletId));
+    r = await call("GET", `/api/bookings/${a.booking._id}`, { cookie: ownerCookie });
+    check("a historical booking still opens for the owner", r.status === 200 && !r.data.booking.outletId);
+
+    /* ---- staff scoped to outlets ---- */
+    section("Q — staff are assigned to outlets, and the API enforces it");
+    const staffOf = async (name, email, permissions, outletIds) => {
+        const role = await Role.create({ businessId: business._id, name: `ZZ ${name} role`, permissions });
+        await BusinessUser.create({
+            businessId: business._id, name, email, roleId: role._id, outletIds,
+            passwordHash: await bcrypt.hash("password123", 10),
+        });
+        const lr = await call("POST", "/api/auth/login", { body: { identifier: email, password: "password123" } });
+        return (lr.setCookie || "").split(";")[0];
+    };
+    const scanA = await staffOf("ZZ Scanner A", "zzscana@test.local", ["scan.use"], [blockA.id]);
+    const scanAB = await staffOf("ZZ Scanner AB", "zzscanab@test.local", ["scan.use"], [blockA.id, blockB.id]);
+    const viewA = await staffOf("ZZ Viewer A", "zzviewa@test.local", ["dashboard.view", "bookings.view", "reports.view"], [blockA.id]);
+
+    r = await call("GET", "/api/auth/me", { cookie: scanA });
+    check("a scanner assigned to Block A is told exactly that", Array.isArray(r.data.outletScope) && r.data.outletScope.length === 1 && String(r.data.outletScope[0]) === String(blockA.id),
+        JSON.stringify(r.data.outletScope));
+    check("...and sees only Block A in the selector", r.data.outlets?.length === 1 && r.data.outlets[0].name === "Block A");
+
+    // Assignment through the team API, with the same tenant and escalation rules.
+    r = await call("POST", "/api/team", { cookie: ownerCookie, body: { name: "ZZ Assigned", email: "zzassigned@test.local", password: "password123", roleId: scanRole._id, outletIds: [blockB.id] } });
+    check("the owner can add a person assigned to an outlet", r.status === 201 && r.data.member?.outletNames?.[0] === "Block B", `${r.status} ${JSON.stringify(r.data.member?.outletNames)}`);
+    const assignedId = r.data.member?.id;
+    r = await call("PATCH", `/api/team/${assignedId}`, { cookie: ownerCookie, body: { outletIds: [otherOutlet._id] } });
+    check("another canteen's outlet cannot be assigned (404)", r.status === 404, String(r.status));
+    r = await call("PATCH", `/api/team/${assignedId}`, { cookie: ownerCookie, body: { outletIds: [blockA.id, blockB.id] } });
+    check("a person can be assigned to several outlets", r.status === 200 && r.data.member.outletIds.length === 2, `${r.status}`);
+    r = await call("PATCH", `/api/team/${assignedId}`, { cookie: ownerCookie, body: { outletIds: [] } });
+    check("...or widened back to the whole canteen", r.status === 200 && r.data.member.outletIds.length === 0, `${r.status}`);
+
+    const adminA = await staffOf("ZZ Admin A", "zzadmina@test.local", ["users.view", "users.edit", "users.create"], [blockA.id]);
+    r = await call("POST", "/api/team", { cookie: adminA, body: { name: "ZZ Wide", email: "zzwide@test.local", password: "password123", outletIds: [] } });
+    check("a Block A admin cannot hand out canteen-wide access (403)", r.status === 403 && r.data.code === "OUTLET_NOT_GRANTABLE", `${r.status} ${r.data.code}`);
+    r = await call("POST", "/api/team", { cookie: adminA, body: { name: "ZZ Wide", email: "zzwide@test.local", password: "password123", outletIds: [blockB.id] } });
+    check("...nor access to Block B, which they don't hold", r.status === 403, String(r.status));
+
+    // Data access through the API, with manipulated parameters.
+    r = await call("GET", `/api/bookings?date=${D1}`, { cookie: viewA });
+    check("a Block A viewer listing bookings gets ONLY Block A rows", r.status === 200 && r.data.bookings.length === 2 && r.data.bookings.every((b) => String(b.outletId) === String(blockA.id)),
+        `${r.status} ${r.data.bookings?.length}`);
+    r = await call("GET", `/api/bookings?date=${D1}&outletId=${blockB.id}`, { cookie: viewA });
+    check("asking for Block B by query parameter is refused (403)", r.status === 403 && r.data.code === "OUTLET_FORBIDDEN", `${r.status} ${r.data.code}`);
+    r = await call("GET", `/api/bookings?date=${D}&outletId=unassigned`, { cookie: viewA });
+    check("asking for the pre-outlet history is refused too", r.status === 403, String(r.status));
+    r = await call("GET", `/api/bookings/${b1.booking._id}`, { cookie: viewA });
+    check("opening a Block B booking by id is refused (403 WRONG_OUTLET)", r.status === 403 && r.data.code === "WRONG_OUTLET", `${r.status} ${r.data.code}`);
+    r = await call("GET", `/api/bookings/${a.booking._id}`, { cookie: viewA });
+    check("opening a pre-outlet booking is refused for outlet-restricted staff", r.status === 403, String(r.status));
+    r = await call("GET", `/api/dashboard/today?date=${D1}`, { cookie: viewA });
+    check("their dashboard shows only Block A: lunch 5", r.status === 200 && r.data.services.find((s) => s.key === "lunch").confirmed.totalQuantity === 5,
+        `${r.status} ${r.data.services?.find((s) => s.key === "lunch")?.confirmed.totalQuantity}`);
+    check("...and the breakdown holds only their outlet", r.data.byOutlet?.length === 1 && String(r.data.byOutlet[0].outletId) === String(blockA.id));
+    r = await call("GET", `/api/dashboard/today?date=${D1}&outletId=${blockB.id}`, { cookie: viewA });
+    check("their dashboard refuses Block B (403)", r.status === 403, String(r.status));
+    r = await call("GET", `/api/reports/day?date=${D1}`, { cookie: viewA });
+    check("their day report is Block A only", r.status === 200 && r.data.totals.confirmedQuantity === 6, `${r.status} ${r.data.totals?.confirmedQuantity}`);
+    r = await call("GET", `/api/reports/day?date=${D1}&outletId=${blockB.id}`, { cookie: viewA });
+    check("their day report refuses Block B", r.status === 403, String(r.status));
+
+    /* ---- QR validation is outlet-specific ---- */
+    section("Q — a QR for Block A works at Block A and nowhere else");
+    const tA = custA.ticket;
+    const tB = b1.booking.ticket;
+
+    r = await call("GET", `/api/bookings/by-ticket/${tA}`, { cookie: scanA });
+    check("Block A scanner opens a Block A ticket", r.status === 200 && r.data.booking.outletName === "Block A", `${r.status}`);
+    r = await call("GET", `/api/bookings/by-ticket/${tB}`, { cookie: scanA });
+    check("Block A scanner is refused a Block B ticket (403 WRONG_OUTLET)", r.status === 403 && r.data.code === "WRONG_OUTLET", `${r.status} ${r.data.code}`);
+    check("...with a message that says so and names the outlet", /another outlet/i.test(r.data.message || "") && /Block B/.test(r.data.message || ""), r.data.message);
+    r = await call("GET", `/api/bookings/by-reference/${b1.booking.reference}`, { cookie: scanA });
+    check("the same by reference", r.status === 403 && r.data.code === "WRONG_OUTLET", `${r.status} ${r.data.code}`);
+
+    r = await call("POST", `/api/bookings/${b1.booking._id}/consume`, { cookie: scanA, body: { via: "scan" } });
+    check("Block A scanner CANNOT serve a Block B booking (403)", r.status === 403 && r.data.code === "WRONG_OUTLET", `${r.status} ${r.data.code}`);
+    check("...and it was not served", !(await Booking.findById(b1.booking._id).lean()).consumedAt);
+    r = await call("POST", `/api/bookings/${b1.booking._id}/consume`, { cookie: scanA, body: { via: "scan", outletId: String(blockB.id) } });
+    check("claiming to be at Block B in the request body changes nothing (403)", r.status === 403, `${r.status} ${r.data.code}`);
+    r = await call("POST", `/api/bookings/${b1.booking._id}/consume`, { cookie: scanA, body: { via: "scan", outletId: String(blockA.id) } });
+    check("nor does claiming the booking is Block A's", r.status === 403 && r.data.code === "WRONG_OUTLET", `${r.status} ${r.data.code}`);
+
+    r = await call("POST", `/api/bookings/${custA.id}/consume`, { cookie: scanA, body: { via: "scan" } });
+    check("Block A scanner CAN serve a Block A booking", r.status === 200 && Boolean(r.data.booking.consumedAt), `${r.status} ${r.data.code || ""}`);
+    check("the serving is recorded against Block A", String(r.data.booking.consumedAtOutletId) === String(blockA.id), String(r.data.booking.consumedAtOutletId));
+
+    r = await call("POST", `/api/bookings/${b1.booking._id}/consume`, { cookie: scanAB, body: { via: "scan" } });
+    check("a scanner assigned to A AND B can serve Block B", r.status === 200 && String(r.data.booking.consumedAtOutletId) === String(blockB.id), `${r.status} ${r.data.code || ""}`);
+    r = await call("POST", `/api/bookings/${a1.booking._id}/consume`, { cookie: scanAB, body: { via: "scan" } });
+    check("...and Block A", r.status === 200, `${r.status} ${r.data.code || ""}`);
+    r = await call("POST", `/api/bookings/${a.booking._id}/consume`, { cookie: scanAB, body: { via: "scan" } });
+    check("...but not a pre-outlet booking, which is nobody's outlet", r.status === 403, `${r.status} ${r.data.code || ""}`);
+
+    // A canteen-wide manager standing at Block A (selector on Block A) is held
+    // to the same rule for the ticket in their hand.
+    const b2 = await svcBook(String(blockB.id), "9800000204", qty({ [veg._id]: 1 }));
+    r = await call("GET", `/api/bookings/by-ticket/${b2.booking.ticket}?outletId=${blockA.id}`, { cookie: ownerCookie });
+    check("the owner scanning AT Block A is refused a Block B ticket", r.status === 403 && r.data.code === "WRONG_OUTLET", `${r.status} ${r.data.code}`);
+    r = await call("POST", `/api/bookings/${b2.booking._id}/consume`, { cookie: ownerCookie, body: { via: "scan", outletId: String(blockA.id) } });
+    check("...and cannot serve it from there", r.status === 403 && r.data.code === "WRONG_OUTLET", `${r.status} ${r.data.code}`);
+    r = await call("POST", `/api/bookings/${b2.booking._id}/consume`, { cookie: ownerCookie, body: { via: "scan", outletId: String(blockB.id) } });
+    check("...but can at Block B", r.status === 200, `${r.status} ${r.data.code || ""}`);
+    r = await call("POST", `/api/bookings/${a.booking._id}/consume`, { cookie: ownerCookie, body: { via: "manual", outletId: String(otherOutlet._id) } });
+    check("claiming to be at another canteen's outlet is refused", r.status === 403, `${r.status} ${r.data.code || ""}`);
+
+    /* ---- cross-canteen ---- */
+    section("Q — the other canteen sees none of it");
+    await BusinessUser.create({
+        businessId: otherBusiness._id, name: "ZZ Other Owner", email: "zzotherowner@test.local",
+        passwordHash: await bcrypt.hash("password123", 10), isOwner: true,
+    });
+    r = await call("POST", "/api/auth/login", { body: { identifier: "zzotherowner@test.local", password: "password123" } });
+    const otherCookie = (r.setCookie || "").split(";")[0];
+    r = await call("GET", "/api/outlets", { cookie: otherCookie });
+    check("the other canteen lists only its own outlet", r.data.outlets?.length === 1 && r.data.outlets[0].name === "Foreign Site", JSON.stringify(r.data.outlets?.map((o) => o.name)));
+    r = await call("GET", `/api/bookings/by-ticket/${tA}`, { cookie: otherCookie });
+    check("our ticket is a plain miss at the other canteen (404)", r.status === 404, String(r.status));
+    r = await call("POST", `/api/bookings/${custA.id}/consume`, { cookie: otherCookie, body: { via: "scan", outletId: String(blockA.id) } });
+    check("our booking cannot be served from the other canteen", r.status === 404, String(r.status));
+    r = await call("DELETE", `/api/outlets/${blockA.id}`, { cookie: otherCookie });
+    check("our outlet cannot be deactivated from the other canteen (404)", r.status === 404, String(r.status));
+    r = await call("GET", `/api/dashboard/today?date=${D1}&outletId=${blockA.id}`, { cookie: otherCookie });
+    check("our outlet's numbers cannot be read from the other canteen", r.status === 403 || r.status === 404, String(r.status));
+    r = await call("POST", `/api/public/business/zz-other-canteen/bookings`, {
+        body: { mealTypeId: String(snacks._id), date: D1, quantities: qty({ [veg._id]: 1 }), outletId: String(blockA.id), party: party("Cross", "9800000205") },
+    });
+    check("a customer cannot book our outlet through the other canteen's page", r.status === 404 || r.status === 400, String(r.status));
+
+    /* ---- the existing flows still work, outlet retained ---- */
+    section("Q — change, cancel and the audit trail keep the outlet");
+    r = await call("POST", `/api/public/business/${SLUG}/bookings/${custA.id}/change`, { body: { phone: "9800000201", quantities: qty({ [veg._id]: 2 }) } });
+    check("a customer can still change their outlet booking", r.status === 200 && r.data.booking.totalQuantity === 2, `${r.status}`);
+    check("...and it keeps its outlet", r.data.booking.outletName === "Block A");
+    r = await call("PATCH", `/api/bookings/${b2.booking._id}`, { cookie: viewA, body: { quantities: qty({ [veg._id]: 5 }) } });
+    check("a Block A operator cannot edit a Block B booking", r.status === 403, String(r.status));
+    r = await call("POST", `/api/bookings/${b2.booking._id}/cancel`, { cookie: ownerCookie, body: { reason: "test" } });
+    check("the operator can cancel it", r.status === 200 && r.data.booking.status === "cancelled", `${r.status}`);
+    check("a cancelled booking keeps its outlet", r.data.booking.outletName === "Block B" && String(r.data.booking.outletId) === String(blockB.id));
+    const cancelledTotal = await confirmedTotals({ businessId: business._id, date: D1, mealTypeId: lunch._id, outlet: String(blockB.id) });
+    check("and leaves Block B's count", cancelledTotal.totalQuantity === 4, String(cancelledTotal.totalQuantity));
+    r = await call("POST", "/api/bookings", { cookie: ownerCookie, body: { mealTypeId: String(snacks._id), date: D1, quantities: qty({ [veg._id]: 1 }), party: party("Counter", "9800000206") } });
+    check("the counter must also choose an outlet now", r.status === 400 && r.data.code === "OUTLET_REQUIRED", `${r.status} ${r.data.code}`);
+    r = await call("POST", "/api/bookings", { cookie: viewA, body: { mealTypeId: String(snacks._id), date: D1, quantities: qty({ [veg._id]: 1 }), outletId: String(blockB.id), party: party("Counter", "9800000206") } });
+    check("a Block A operator cannot enter a Block B booking at the counter", r.status === 403, `${r.status} ${r.data.code}`);
+
+    await new Promise((res) => setTimeout(res, 700));
+    const outletAudit = await AuditLog.find({ businessId: business._id, bookingId: custA.id }).lean();
+    check("every audit row for the booking derives its outlet from the booking", outletAudit.length > 0 && outletAudit.every((x) => String(x.outletId) === String(blockA.id)),
+        JSON.stringify(outletAudit.map((x) => [x.action, x.outletId])));
+    r = await call("GET", `/api/audit?outletId=${blockA.id}`, { cookie: ownerCookie });
+    check("the activity log can be read per outlet", r.status === 200 && r.data.entries.length > 0 && r.data.entries.every((e) => String(e.outletId) === String(blockA.id)), `${r.status}`);
+    r = await call("GET", `/api/parties/${custARow.partyId}?outletId=${blockB.id}`, { cookie: ownerCookie });
+    check("a customer's history filters by outlet too", r.status === 200 && r.data.bookings.length === 0, `${r.status} ${r.data.bookings?.length}`);
+
+    /* ---- deactivation ---- */
+    section("Q — a deactivated outlet leaves the picker but keeps its history");
+    r = await call("DELETE", `/api/outlets/${blockB.id}`, { cookie: ownerCookie });
+    check("the owner deactivates Block B", r.status === 200 && r.data.deactivated === true && r.data.existingBookings >= 2, `${r.status} ${JSON.stringify(r.data).slice(0, 100)}`);
+    r = await call("GET", `/api/public/business/${SLUG}?date=${D1}`);
+    check("customers no longer see Block B", r.data.outlets.length === 2 && !r.data.outlets.some((o) => o.name === "Block B"), JSON.stringify(r.data.outlets.map((o) => o.name)));
+    r = await bookPublic(String(blockB.id), "9800000207", qty({ [veg._id]: 1 }));
+    check("a booking for Block B is refused (409 OUTLET_INACTIVE)", r.status === 409 && r.data.code === "OUTLET_INACTIVE", `${r.status} ${r.data.code}`);
+    r = await call("GET", `/api/bookings/${b1.booking._id}`, { cookie: ownerCookie });
+    check("its existing bookings still open and still say Block B", r.status === 200 && r.data.booking.outletName === "Block B", `${r.status}`);
+    r = await call("GET", `/api/dashboard/today?date=${D1}`, { cookie: ownerCookie });
+    check("its numbers still appear in the overall breakdown, marked inactive",
+        r.data.byOutlet.some((o) => String(o.outletId) === String(blockB.id) && o.active === false && o.totalQuantity === 4),
+        JSON.stringify(r.data.byOutlet.map((o) => [o.name, o.active, o.totalQuantity])));
+    r = await call("PATCH", `/api/outlets/${blockB.id}`, { cookie: ownerCookie, body: { active: true } });
+    check("and it can be reactivated", r.status === 200 && r.data.outlet.active === true);
+
     /* ---------- cleanup ---------- */
     server.close();
     const ids = [business._id, otherBusiness._id];
@@ -918,6 +1229,7 @@ async function main() {
         BusinessUser.deleteMany({ businessId: { $in: ids } }),
         Role.deleteMany({ businessId: { $in: ids } }),
         AuditLog.deleteMany({ businessId: { $in: ids } }),
+        Outlet.deleteMany({ businessId: { $in: ids } }),
     ]);
     await Business.deleteMany({ _id: { $in: ids } });
     await mongoose.disconnect();

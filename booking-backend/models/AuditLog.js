@@ -21,6 +21,10 @@ const auditLogSchema = new mongoose.Schema(
         action: { type: String, required: true },
 
         bookingId: { type: mongoose.Schema.Types.ObjectId, ref: "Booking", default: null },
+        // The outlet the affected booking belongs to, when there is one, so the
+        // activity log can be read per outlet. Copied from the booking at write
+        // time; null for business-level actions and for pre-outlet bookings.
+        outletId: { type: mongoose.Schema.Types.ObjectId, ref: "Outlet", default: null },
         requestId: { type: mongoose.Schema.Types.ObjectId, ref: "BookingRequest", default: null },
         partyId: { type: mongoose.Schema.Types.ObjectId, ref: "BookingParty", default: null },
 
@@ -37,6 +41,7 @@ const auditLogSchema = new mongoose.Schema(
 );
 
 auditLogSchema.index({ businessId: 1, createdAt: -1 });
+auditLogSchema.index({ businessId: 1, outletId: 1, createdAt: -1 });
 auditLogSchema.index({ bookingId: 1, createdAt: -1 });
 
 module.exports = mongoose.model("AuditLog", auditLogSchema);

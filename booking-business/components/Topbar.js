@@ -2,7 +2,7 @@
 // components/Topbar.js — business name, the "accepting bookings" switch (the
 // booking product's equivalent of Chefo's canteen Open/Closed status), and the
 // approval-queue count. Also hosts the hamburger that opens the mobile sidebar.
-import Link from "next/link";
+import OutletSelector from "@/components/OutletSelector";
 
 function MenuIcon() {
     return (
@@ -14,6 +14,7 @@ function MenuIcon() {
 
 export default function Topbar({
     businessName, accepting, canChangeStatus, statusBusy, onStatusChange, onMenuClick,
+    outlets = [], outletScope = null, outlet = "", onOutletChange,
 }) {
     return (
         <header className="topbar">
@@ -24,6 +25,10 @@ export default function Topbar({
                 <span className="topbar-name" title={businessName}>{businessName || "—"}</span>
             </div>
             <div className="topbar-actions">
+                {/* Which slice of the canteen every page describes. Upper
+                    right, before the status, because it changes what the
+                    whole screen means. */}
+                <OutletSelector outlets={outlets} scope={outletScope} value={outlet} onChange={onOutletChange} />
                 <label className="small muted topbar-status-label" htmlFor="booking-status">Bookings</label>
                 {canChangeStatus ? (
                     <select

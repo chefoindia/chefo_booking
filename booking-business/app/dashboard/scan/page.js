@@ -28,6 +28,8 @@ import Empty from "@/components/Empty";
 import StatusBadge, { ServedBadge } from "@/components/StatusBadge";
 import { Field, Input, Textarea } from "@/components/Field";
 import Spinner from "@/components/Spinner";
+import { OutletIcon } from "@/components/OutletSelector";
+import { OutletTag } from "@/components/OutletScopeLine";
 import {
     unlock as unlockFeedback, scanCaptured, scanFound, scanMiss, servedOk,
     soundOn, setSoundOn,
@@ -106,7 +108,17 @@ export default function ScanPage() {
     const [camError, setCamError] = useState(null);
 
     const [typed, setTyped] = useState("");
-    const [phase, setPhase] = useState("idle"); // idle | looking | found | missing | many
+    const [phase, setPhase] = useState("idle"); // idle | looking | found | missing | many | wrong-outlet
+    const [wrongOutlet, setWrongOutlet] = useState("");
+
+    /* WHERE THIS COUNTER IS. The top bar's outlet is sent with every lookup
+       and every serve as `outletId`. The server treats it as a claim that can
+       only NARROW: the staff member's real scope comes from their own record,
+       and a ticket for another outlet is refused whatever this says. For a
+       scanner assigned to one outlet the selector is pinned, so the context
+       is automatic. */
+    const scanOutlet = access.outlet;
+    const scanQs = scanOutlet ? `?outletId=${encodeURIComponent(scanOutlet)}` : "";
     const [lookedUp, setLookedUp] = useState("");
     const [data, setData] = useState(null);
     const [choices, setChoices] = useState([]);
@@ -163,19 +175,31 @@ export default function ScanPage() {
     }, [teardown]);
 
     /* -------------------------------------------------- lookup */
+    // "Belongs to another outlet" is its own screen, not a toast: at a
+    // counter the answer has to stay on screen long enough to send the
+    // customer to the right place.
+    const handleWrongOutlet = (e) => {
+        if (e?.code !== "WRONG_OUTLET" && e?.code !== "OUTLET_FORBIDDEN") return false;
+        setWrongOutlet(e.message || "This booking belongs to another outlet.");
+        setPhase("wrong-outlet");
+        scanMiss();
+        return true;
+    };
+
     const openById = useCallback(async (id) => {
         try {
-            const res = await get(`/api/bookings/${id}`);
+            const res = await get(`/api/bookings/${id}${scanQs}`);
             setData(res);
             setPhase("found");
             scanFound();
         } catch (e) {
+            if (handleWrongOutlet(e)) return;
             if (e.status === 404) { setPhase("missing"); scanMiss(); return; }
             setPhase("idle");
             toast("error", e.status === 403 ? "Not allowed" : "Couldn\u2019t open that booking", e.message);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+    }, [scanQs]);
 
     const lookup = useCallback(async (raw) => {
         const parsed = parseScanned(raw);
@@ -189,7 +213,7 @@ export default function ScanPage() {
 
         try {
             if (parsed.kind === "ticket") {
-                setData(await get(`/api/bookings/by-ticket/${encodeURIComponent(parsed.value)}`));
+                setData(await get(`/api/bookings/by-ticket/${encodeURIComponent(parsed.value)}${scanQs}`));
                 setPhase("found");
                 scanFound();
                 return;
@@ -198,7 +222,7 @@ export default function ScanPage() {
             // A BK- reference has its own endpoint: exact match, one record,
             // and openable by a role whose only permission is the scanner.
             try {
-                setData(await get(`/api/bookings/by-reference/${encodeURIComponent(parsed.value)}`));
+                setData(await get(`/api/bookings/by-reference/${encodeURIComponent(parsed.value)}${scanQs}`));
                 setPhase("found");
                 scanFound();
                 return;
@@ -223,11 +247,13 @@ export default function ScanPage() {
             setPhase("many");
             scanMiss();   // a choice still stops the queue; it is not a clean hit
         } catch (e) {
+            if (handleWrongOutlet(e)) return;
             if (e.status === 404 || e.code === "NO_TICKET") { setPhase("missing"); scanMiss(); return; }
             setPhase("idle");
             toast("error", e.status === 403 ? "Not allowed" : "Couldn't look that up", e.message);
         }
-    }, [openById, toast, access]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [openById, toast, access, scanQs]);
 
     const onDecode = useCallback((text) => {
         // The success callback fires on every frame the code stays in view.
@@ -352,6 +378,7 @@ export default function ScanPage() {
         try {
             const res = await post(`/api/bookings/${b._id}/consume`, {
                 via: "scan",
+                ...(scanOutlet ? { outletId: scanOutlet } : {}),
                 ...(note.trim() ? { note: note.trim() } : {}),
             });
             setData((d) => ({ ...d, booking: res.booking }));
@@ -365,7 +392,8 @@ export default function ScanPage() {
                 NOT_CONSUMABLE: ["This booking doesn't stand", "It was cancelled or rejected, so there is nothing to hand over."],
                 CONSUME_PENDING: ["Still waiting on a decision", "Approve the open request first, then mark it served."],
             }[e.code];
-            if (e.status === 403) toast("error", "Not allowed", "Your role can't mark meals as served. Ask the owner for the booking consume permission.");
+            if (e.code === "WRONG_OUTLET" || e.code === "OUTLET_FORBIDDEN") { setConfirm(null); handleWrongOutlet(e); }
+            else if (e.status === 403) toast("error", "Not allowed", "Your role can't mark meals as served. Ask the owner for the booking consume permission.");
             else if (known) toast("error", known[0], known[1]);
             else toast("error", "Couldn't mark it served", e.message);
         } finally {
@@ -376,7 +404,7 @@ export default function ScanPage() {
     const runUnconsume = async () => {
         setBusy(true);
         try {
-            const res = await post(`/api/bookings/${b._id}/unconsume`);
+            const res = await post(`/api/bookings/${b._id}/unconsume`, scanOutlet ? { outletId: scanOutlet } : {});
             setData((d) => ({ ...d, booking: res.booking }));
             setConfirm(null);
             toast("success", "Served mark removed", "This booking is back to not served.");
@@ -404,7 +432,7 @@ export default function ScanPage() {
     });
 
     // A found booking, or a list to choose from, owns the screen.
-    const showScanner = phase !== "found" && phase !== "many" && phase !== "looking";
+    const showScanner = phase !== "found" && phase !== "many" && phase !== "looking" && phase !== "wrong-outlet";
 
     return (
         <div>
@@ -416,15 +444,29 @@ export default function ScanPage() {
                         heading read "Booking found" before anything was found. */}
                     <h1 className="page-title">
                         {phase === "looking" ? "Looking that up"
+                            : phase === "wrong-outlet" ? "Not for this outlet"
                             : showScanner ? "Scan a booking" : "Booking found"}
                     </h1>
                     <p className="page-sub">
                         {phase === "looking"
                             ? "Checking this business’s bookings — a second at most."
+                            : phase === "wrong-outlet"
+                            ? "This code isn\u2019t for this counter."
                             : showScanner
                             ? "Point the camera at the customer\u2019s code, or type their reference."
                             : "Everything the counter needs for this one. Scan the next when you\u2019re done."}
                     </p>
+                    {/* Which outlet this counter is validating for — the
+                        context every scan runs in. Automatic for a scanner
+                        assigned to one outlet; the top-bar selector otherwise. */}
+                    {access.outlets.length > 0 && (
+                        <span className="outlet-scope-line" title="Codes are only accepted for this outlet">
+                            <OutletIcon size={13} />
+                            {access.outlet
+                                ? `Scanning at ${access.outletName}`
+                                : `Scanning for ${Array.isArray(access.outletScope) ? "all your outlets" : "every outlet"}`}
+                        </span>
+                    )}
                 </div>
                 {/* The way back to the scanner, once the scanner is hidden. */}
                 {!showScanner && phase !== "looking" && (
@@ -545,6 +587,22 @@ export default function ScanPage() {
                         <p className="small muted" style={{ margin: "6px 0 0" }}>
                             {lookedUp ? <span className="mono">{lookedUp}</span> : "One moment"}
                         </p>
+                    </div>
+                )}
+
+                {phase === "wrong-outlet" && (
+                    <div className="card card-pad" style={{ borderColor: "var(--brick)", background: "var(--brick-soft)" }}>
+                        <div className="row-between wrap" style={{ gap: 12 }}>
+                            <div style={{ minWidth: 0 }}>
+                                <div className="serve-head" style={{ color: "var(--brick)" }}>Not for this outlet</div>
+                                <div className="small" style={{ marginTop: 4, color: "var(--brick)" }}>{wrongOutlet}</div>
+                                <div className="xsmall" style={{ marginTop: 6, color: "var(--brick)", opacity: 0.85 }}>
+                                    {access.outlet ? `You are scanning at ${access.outletName}. ` : ""}
+                                    Ask the customer to collect at the outlet they booked. Nothing was marked.
+                                </div>
+                            </div>
+                            <button className="btn btn-primary" onClick={scanNext}>Scan next</button>
+                        </div>
                     </div>
                 )}
 
@@ -715,6 +773,7 @@ function Result({ data, canConsume, onServe, onUndo, onNext }) {
                         </div>
                     </div>
                     <div className="row wrap" style={{ gap: 6 }}>
+                        <OutletTag booking={b} />
                         <StatusBadge status={b.status} />
                         <ServedBadge booking={b} />
                         {openRequest && (

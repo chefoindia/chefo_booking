@@ -475,6 +475,26 @@ table.tbl, .tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
 }
 .topbar-actions { display: flex; align-items: center; gap: 12px; }
 .topbar-status { width: auto; padding: 6px 10px; font-size: 13px; }
+/* The outlet selector: an icon glued to a select, reading as one control. */
+.topbar-outlet {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding-left: 10px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--card); color: var(--basil-dark); max-width: 260px;
+}
+.topbar-outlet:focus-within { border-color: var(--basil); box-shadow: 0 0 0 3px var(--basil-soft); }
+.topbar-outlet svg { flex: 0 0 auto; }
+.topbar-outlet-select {
+  width: auto; min-width: 0; border: none; box-shadow: none; background: transparent;
+  padding: 6px 28px 6px 2px; font-size: 13px; font-weight: 600; color: var(--ink);
+}
+.topbar-outlet-select:focus { box-shadow: none; }
+.topbar-outlet-badge { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; font-size: 13px; }
+/* A page's "you are looking at Block A" line under its title. */
+.outlet-scope-line {
+  display: inline-flex; align-items: center; gap: 6px; margin-top: 6px;
+  padding: 3px 9px; border-radius: 999px; font-size: 12px; font-weight: 600;
+  background: var(--lake-soft); color: var(--lake);
+}
 .topbar-pending {
   text-decoration: none; font-weight: 600; font-size: 13px;
   background: var(--turmeric-soft); color: var(--turmeric); border: 1px solid #ecdcb6;
@@ -507,6 +527,8 @@ table.tbl, .tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
   .topbar { height: auto; min-height: var(--topbar-h); padding: 10px 16px; gap: 10px; }
   .topbar-actions { flex-shrink: 0; gap: 8px; }
   .topbar-status-label { display: none; }
+  .topbar-outlet { max-width: 46vw; }
+  .topbar-outlet-select { padding-right: 22px; font-size: 12.5px; }
   .content { padding: 14px; }
   .hide-sm { display: none !important; }
 }

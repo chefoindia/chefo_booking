@@ -88,6 +88,7 @@ export default function HomeTab() {
                                         <div className="xsmall faint">
                                             {formatDate(bk.date, { year: true })}{dayNote(bk.date, today)}
                                             {bk.totalQuantity ? ` · ${bk.totalQuantity} meal${bk.totalQuantity === 1 ? "" : "s"}` : ""}
+                                            {bk.outletName ? ` · ${bk.outletName}` : ""}
                                         </div>
                                     </div>
                                     <span className={`badge ${bk.status === "pending_approval" ? "badge-amber" : "badge-green"}`}>

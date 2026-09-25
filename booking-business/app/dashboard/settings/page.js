@@ -20,6 +20,7 @@ import Drawer from "@/components/Drawer";
 import ClockTimeInput from "@/components/ClockTimeInput";
 import Empty from "@/components/Empty";
 import { SkeletonTiles, SkeletonCards, SkeletonTable } from "@/components/Skeleton";
+import OutletsSection from "@/components/OutletsSection";
 
 const RAILS = ["rail-breakfast", "rail-lunch", "rail-dinner"];
 const railFor = (m, i) => {
@@ -199,6 +200,7 @@ export default function SettingsPage() {
                         <AccountSection user={access.user} canEdit ask={ask} run={runConfirmed} />
                         <ProfileSection business={b} canEdit={canEdit} ask={ask} run={runConfirmed} />
                         <ServicesSection mealTypes={config.mealTypes} canEdit={canEdit} ask={ask} run={runConfirmed} />
+                        <OutletsSection canEdit={canEdit} ask={ask} run={runConfirmed} />
                         <OptionsSection variants={config.variants} mealTypes={config.mealTypes} canEdit={canEdit} ask={ask} run={runConfirmed} />
                         <RulesSection business={b} canEdit={canEdit} ask={ask} run={runConfirmed} />
                         <PartyTypesSection business={b} canEdit={canEdit} ask={ask} run={runConfirmed} />

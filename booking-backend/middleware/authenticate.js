@@ -87,6 +87,17 @@ async function authenticate(req, res, next) {
         req.businessId = user.businessId;
         req.actor = { userId: user._id, name: user.name, isOwner: user.isOwner };
 
+        /* WHERE this person may act — see utils/outletScope.js.
+             null      canteen-wide (owner, or no restriction on the record)
+             [ids...]  only these outlets
+           From the user's own record, like businessId, so no request can
+           widen it. An owner is never restricted: a restriction that could
+           lock an owner out of part of their own business is a footgun, not
+           a feature. */
+        req.outletScope = (!user.isOwner && Array.isArray(user.outletIds) && user.outletIds.length)
+            ? user.outletIds.map(String)
+            : null;
+
         if (user.isOwner) {
             req.permissions = null; // null = unrestricted
         } else {

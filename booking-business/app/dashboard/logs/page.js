@@ -46,10 +46,11 @@ export default function LogsPage() {
         try {
             const qs = new URLSearchParams({ page, perPage });
             Object.entries(filters).forEach(([k, v]) => { if (v) qs.set(k, v); });
+            if (access.outlet) qs.set("outletId", access.outlet);
             setData(await get(`/api/audit?${qs}`));
         } catch (e) { toast("error", "Couldn't load the log", e.message); }
         finally { setLoading(false); }
-    }, [filters, page, perPage, toast]);
+    }, [filters, page, perPage, access.outlet, toast]);
 
     useEffect(() => {
         const t = setTimeout(load, filters.q ? 300 : 0);
@@ -61,6 +62,7 @@ export default function LogsPage() {
         try {
             const qs = new URLSearchParams();
             Object.entries(filters).forEach(([k, v]) => { if (v) qs.set(k, v); });
+            if (access.outlet) qs.set("outletId", access.outlet);
             await downloadFromApi(`/api/audit/export.csv?${qs}`, "activity-log.csv");
             toast("success", "Export started", "Your CSV is downloading. This export is itself recorded.");
         } catch (e) { toast("error", "Couldn't export", e.message); }
@@ -72,6 +74,7 @@ export default function LogsPage() {
                 <div>
                     <h1 className="page-title">Activity log</h1>
                     <p className="page-sub">Who did what, and when. Every change to bookings, settings, team and access is here — nothing is edited or deleted from this list.</p>
+                    {access.outlet && <p className="xsmall faint" style={{ marginTop: 4 }}>Showing only actions on {access.outletName}&apos;s bookings. Business-level actions appear under All outlets.</p>}
                 </div>
                 {access.can("audit.export") && <button className="btn btn-secondary" onClick={exportCsv}>Export CSV</button>}
             </div>

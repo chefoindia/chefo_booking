@@ -55,6 +55,11 @@ const bookingRequestSchema = new mongoose.Schema(
         mealTypeId: { type: mongoose.Schema.Types.ObjectId, ref: "MealType", required: true },
         mealTypeName: { type: String, default: "" },
         date: { type: String, required: true, index: true },
+        // Copied from the booking the request is about, so the queue can be
+        // scoped to an outlet without loading every related booking. null for
+        // requests raised against bookings that predate outlets.
+        outletId: { type: mongoose.Schema.Types.ObjectId, ref: "Outlet", default: null },
+        outletName: { type: String, default: "" },
 
         // BEFORE and AFTER, both kept.
         //
@@ -90,6 +95,8 @@ const bookingRequestSchema = new mongoose.Schema(
 
 // The queue: pending requests for this business, oldest first.
 bookingRequestSchema.index({ businessId: 1, status: 1, createdAt: 1 });
+bookingRequestSchema.index({ businessId: 1, outletId: 1, status: 1, createdAt: 1 });
+bookingRequestSchema.index({ businessId: 1, outletId: 1, date: 1, status: 1 });
 bookingRequestSchema.index({ businessId: 1, date: 1, mealTypeId: 1, status: 1 });
 bookingRequestSchema.index({ businessId: 1, reference: 1 }, { unique: true });
 

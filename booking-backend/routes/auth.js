@@ -678,8 +678,15 @@ router.post("/api/auth/reset-password", async (req, res, next) => {
  */
 router.get("/api/auth/me", authenticate, async (req, res, next) => {
     try {
-        const business = await Business.findById(req.businessId)
-            .select("name slug logoUrl acceptingBookings closedMessage timezoneOffsetMinutes partyTypes rules city addressLine landmark contactPhone contactEmail setupCompletedAt qrPoster createdAt").lean();
+        const Outlet = require("../models/Outlet");
+        const outletFilter = { businessId: req.businessId };
+        if (req.outletScope) outletFilter._id = { $in: req.outletScope };
+        const [business, outlets, anyActiveOutlet] = await Promise.all([
+            Business.findById(req.businessId)
+                .select("name slug logoUrl acceptingBookings closedMessage timezoneOffsetMinutes partyTypes rules city addressLine landmark contactPhone contactEmail setupCompletedAt qrPoster createdAt").lean(),
+            Outlet.find(outletFilter).sort({ sortOrder: 1, name: 1 }).select("name key active sortOrder description").lean(),
+            Outlet.exists({ businessId: req.businessId, active: true }),
+        ]);
 
         let roleName = "";
         if (!req.user.isOwner && req.user.roleId) {
@@ -705,6 +712,14 @@ router.get("/api/auth/me", authenticate, async (req, res, next) => {
             },
             business,
             setupPending: Boolean(business && !business.setupCompletedAt),
+            /* WHERE this person may act. The outlet selector on every page is
+               rendered from `outlets`; `outletScope` null means the whole
+               canteen (so "All outlets" is honest), an array means the
+               selector is confined to those. Mirrors the server's own scope
+               exactly, the way `permissions` mirrors can(). */
+            outlets: outlets.map((o) => ({ id: o._id, name: o.name, key: o.key, active: o.active !== false, description: o.description || "" })),
+            outletScope: req.outletScope,
+            outletRequired: Boolean(anyActiveOutlet),
             // null = owner = unrestricted. The client mirrors the server's own
             // can() semantics on exactly this value.
             permissions: req.user.isOwner ? null : (req.permissions || []),

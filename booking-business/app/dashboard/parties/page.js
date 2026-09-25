@@ -130,12 +130,14 @@ export default function PartiesPage() {
 
 function PartyDetail({ id, onClose }) {
     const toast = useToast();
+    const access = useAccess();
     const [data, setData] = useState(null);
 
+    // The history shown is scoped to the top bar's outlet, like every list.
     useEffect(() => {
-        get(`/api/parties/${id}`).then(setData)
+        get(`/api/parties/${id}${access.outlet ? `?outletId=${encodeURIComponent(access.outlet)}` : ""}`).then(setData)
             .catch((e) => { toast("error", "Couldn't load", e.message); onClose(); });
-    }, [id, toast, onClose]);
+    }, [id, access.outlet, toast, onClose]);
 
     const p = data?.party;
     return (
@@ -159,18 +161,19 @@ function PartyDetail({ id, onClose }) {
                     )}
 
                     <div>
-                        <div className="num-label" style={{ marginBottom: 6 }}>Booking history</div>
+                        <div className="num-label" style={{ marginBottom: 6 }}>Booking history{access.outlet ? ` · ${access.outletName}` : ""}</div>
                         {!data.bookings.length ? (
                             <p className="small muted">No bookings yet.</p>
                         ) : (
                             <div className="table-wrap">
                                 <table className="tbl">
-                                    <thead><tr><th>Reference</th><th>Meal</th><th>Date</th>
+                                    <thead><tr><th>Reference</th>{access.outlets.length > 0 && <th>Outlet</th>}<th>Meal</th><th>Date</th>
                                         <th className="num">Meals</th><th>Status</th></tr></thead>
                                     <tbody>
                                         {data.bookings.slice(0, 25).map((b) => (
                                             <tr key={b._id}>
                                                 <td className="mono">{b.reference}</td>
+                                                {access.outlets.length > 0 && <td className="small">{b.outletName || <span className="faint">—</span>}</td>}
                                                 <td>{b.mealTypeName}</td>
                                                 <td className="small">{formatDate(b.date)}</td>
                                                 <td className="num">{b.totalQuantity}</td>

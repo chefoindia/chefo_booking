@@ -56,6 +56,22 @@ const businessUserSchema = new mongoose.Schema(
 
         roleId: { type: mongoose.Schema.Types.ObjectId, ref: "Role", default: null },
 
+        /* ---- OUTLET SCOPE ---------------------------------------------------
+           WHICH outlets this person may act on, on top of WHAT their role lets
+           them do. The two are deliberately separate axes: the role says
+           "may scan and serve", this says "at Block A and Block B".
+
+           EMPTY MEANS EVERYWHERE. A user with no outlet restriction operates
+           canteen-wide, which is what every existing user is the moment this
+           field appears — nobody loses access in the migration. Owners are
+           always canteen-wide whatever this holds; a restriction that could
+           lock an owner out of part of their own business is not a feature.
+
+           Resolved fresh on every request in middleware/authenticate.js, the
+           same way the role's permissions are, so narrowing someone to one
+           outlet takes effect on their next click. */
+        outletIds: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: "Outlet" }], default: [] },
+
         // Checked on EVERY request, not just at login, so switching someone off
         // takes effect on their next action rather than whenever their token
         // happens to expire.
@@ -84,6 +100,8 @@ businessUserSchema.index({ email: 1 }, nonEmpty("email"));
 businessUserSchema.index({ phone: 1 }, nonEmpty("phone"));
 businessUserSchema.index({ loginId: 1 }, nonEmpty("loginId"));
 businessUserSchema.index({ businessId: 1, isActive: 1 });
+// "Who is assigned to this outlet" — the team page and the outlet editor ask it.
+businessUserSchema.index({ businessId: 1, outletIds: 1 });
 
 // "kitchen-a", "frontdesk2": 3–32 chars, letters/digits/dot/underscore/hyphen.
 // Must not look like a phone number or an email, or the login lookup could

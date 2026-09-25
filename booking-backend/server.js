@@ -70,6 +70,7 @@ app.use(require("./routes/customerAccount"));
 // ---- operator surface (authenticated + permission-gated inside) ----
 app.use(require("./routes/auth"));
 app.use(require("./routes/dashboard"));
+app.use(require("./routes/outlets"));
 app.use(require("./routes/bookings"));
 app.use(require("./routes/requests"));
 app.use(require("./routes/config"));

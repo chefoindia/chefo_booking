@@ -24,6 +24,7 @@ import { downloadFromApi } from "@/lib/download";
 import Modal from "@/components/Modal";
 import StatusBadge, { ServedBadge } from "@/components/StatusBadge";
 import { Field, Input, Select, Textarea } from "@/components/Field";
+import OutletScopeLine, { OutletTag } from "@/components/OutletScopeLine";
 
 export default function BookingsPage() {
     const access = useAccess();
@@ -53,6 +54,18 @@ export default function BookingsPage() {
     const [detail, setDetail] = useState(params.get("booking") || null);
     const [creating, setCreating] = useState(false);
 
+    // The outlet comes from the shell's selector, not from this page. A link
+    // may carry ?outletId= (the dashboard's "View" on an outlet line) — that
+    // moves the shared selector rather than starting a private filter, so
+    // the top bar and this list can never disagree.
+    useEffect(() => {
+        const wanted = params.get("outletId");
+        if (wanted && wanted !== access.outlet) {
+            if (wanted === "unassigned" || access.outlets.some((o) => String(o.id) === wanted)) access.setOutlet(wanted);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
 
     // The booking form and the filters both need the configured meal services
     // and variants. config.view is owner-gated, so anyone without it falls back
@@ -70,8 +83,9 @@ export default function BookingsPage() {
         if (filters.status) qs.set("status", filters.status);
         if (filters.served) qs.set("served", filters.served);
         if (filters.q.trim()) qs.set("q", filters.q.trim());
+        if (access.outlet) qs.set("outletId", access.outlet);
         return qs;
-    }, [filters]);
+    }, [filters, access.outlet]);
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -116,6 +130,7 @@ export default function BookingsPage() {
                 <div>
                     <h1 className="page-title">Bookings</h1>
                     <p className="page-sub">Everything booked, with its full history.</p>
+                    <OutletScopeLine />
                 </div>
                 <div className="row wrap">
                     {access.can("reports.export") && (
@@ -187,7 +202,9 @@ export default function BookingsPage() {
                         <table className="tbl">
                             <thead>
                                 <tr>
-                                    <th>Reference</th><th>Customer</th><th>Meal</th><th>Date</th>
+                                    <th>Reference</th><th>Customer</th>
+                                    {access.outlets.length > 0 && <th>Outlet</th>}
+                                    <th>Meal</th><th>Date</th>
                                     <th className="num">Meals</th><th>Breakdown</th><th>Status</th><th>Served</th><th></th>
                                 </tr>
                             </thead>
@@ -201,6 +218,7 @@ export default function BookingsPage() {
                                                 <div className="xsmall faint">{b.partySnapshot.organisation}</div>
                                             )}
                                         </td>
+                                        {access.outlets.length > 0 && <td><OutletTag booking={b} /></td>}
                                         <td>{b.mealTypeName || mealName[String(b.mealTypeId)]}</td>
                                         <td className="small">{formatDate(b.date)}</td>
                                         <td className="num">{b.totalQuantity}</td>
@@ -364,7 +382,7 @@ function BookingDetail({ id, onClose, onChanged, config }) {
         <>
             <Modal open wide onClose={onClose}
                 title={b ? `${b.reference} · ${b.partySnapshot?.name}` : "Booking"}
-                subtitle={b ? `${b.mealTypeName} · ${formatDate(b.date, { year: true })}` : ""}
+                subtitle={b ? `${b.mealTypeName} · ${formatDate(b.date, { year: true })}${b.outletName ? ` · ${b.outletName}` : ""}` : ""}
                 footer={
                     <>
                         <button className="btn btn-ghost" onClick={onClose}>Close</button>
@@ -395,6 +413,7 @@ function BookingDetail({ id, onClose, onChanged, config }) {
                         <div className="row wrap" style={{ gap: 8 }}>
                             <StatusBadge status={b.status} />
                             <ServedBadge booking={b} />
+                            {(b.outletName || access.outlets.length > 0) && <OutletTag booking={b} />}
                             {b.submittedAfterCutoff && <span className="badge badge-amber">Submitted after cutoff</span>}
                             {b.source === "operator" && <span className="badge badge-blue">Entered at counter</span>}
                         </div>
@@ -536,9 +555,15 @@ function BookingDetail({ id, onClose, onChanged, config }) {
 /* ------------------------------------------------------------------ */
 function NewBooking({ config, onClose, onCreated }) {
     const toast = useToast();
+    const access = useAccess();
+    // Only ACTIVE outlets are offered, preselected to whatever the top bar
+    // shows — a counter at Block A books for Block A without a second click.
+    const outletChoices = access.outlets.filter((o) => o.active !== false);
     const [form, setForm] = useState({
         mealTypeId: "", date: todayKey(), name: "", phone: "",
         organisation: "", partyType: "individual", note: "",
+        outletId: access.outlet && outletChoices.some((o) => String(o.id) === access.outlet) ? access.outlet
+            : (outletChoices.length === 1 ? String(outletChoices[0].id) : ""),
     });
     const [qty, setQty] = useState({});
     const [busy, setBusy] = useState(false);
@@ -553,6 +578,7 @@ function NewBooking({ config, onClose, onCreated }) {
             await post("/api/bookings", {
                 mealTypeId: form.mealTypeId,
                 date: form.date,
+                outletId: form.outletId || undefined,
                 quantities: qty,
                 party: {
                     name: form.name, phone: form.phone,
@@ -569,7 +595,8 @@ function NewBooking({ config, onClose, onCreated }) {
         } finally { setBusy(false); }
     };
 
-    const ready = form.mealTypeId && form.date && form.name.trim() && form.phone.trim() && total > 0;
+    const ready = form.mealTypeId && form.date && form.name.trim() && form.phone.trim() && total > 0
+        && (!access.outletRequired || form.outletId);
 
     return (
         <Modal open wide onClose={onClose}
@@ -585,6 +612,15 @@ function NewBooking({ config, onClose, onCreated }) {
             }
         >
             <div className="stack">
+                {access.outletRequired && (
+                    <Field label="Outlet" hint="Which serving point this booking is for. Its QR will only work there.">
+                        <Select value={form.outletId}
+                            onChange={(e) => setForm((f) => ({ ...f, outletId: e.target.value }))}>
+                            <option value="">Choose an outlet…</option>
+                            {outletChoices.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+                        </Select>
+                    </Field>
+                )}
                 <div className="grid-2">
                     <Field label="Meal service">
                         <Select value={form.mealTypeId}

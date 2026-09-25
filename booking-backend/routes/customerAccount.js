@@ -84,6 +84,8 @@ function shapeForCustomer(b) {
         date: b.date,
         mealTypeId: b.mealTypeId,
         mealTypeName: b.mealTypeName,
+        outletId: b.outletId || null,
+        outletName: b.outletName || "",
         status: b.status,
         lines: (b.lines || []).map((l) => ({
             variantId: l.variantId, variantName: l.variantName, quantity: l.quantity,

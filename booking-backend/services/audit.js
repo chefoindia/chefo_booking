@@ -56,13 +56,14 @@ function safe(value, depth = 0) {
  */
 function record({
     businessId, actor = null, party = null, action,
-    bookingId = null, requestId = null,
+    bookingId = null, requestId = null, outletId = null,
     before = null, after = null, details = {}, requestMeta = {},
 }) {
     if (!businessId || !action) return;
 
     AuditLog.create({
         businessId,
+        outletId: outletId || null,
         actorUserId: actor?.userId || null,
         actorPartyId: actor ? null : (party?._id || null),
         actorName: actor?.name || party?.name || "",

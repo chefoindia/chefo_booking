@@ -14,9 +14,16 @@
 //     kitchen can act on; "120 veg, 65 non-veg" is.
 //   * Bookings are summed, never counted. One group booking of 80 is 80 plates
 //     and one row.
+//   * OUTLET IS A FILTER, NEVER A SECOND SOURCE. "Overall lunch" and "Block A
+//     lunch" are the same aggregation over the same rows with one more $match
+//     term; the overall number is never assembled by adding outlet numbers
+//     together, so a booking can never be counted twice and the two views can
+//     never drift. `outlet` takes: undefined (everything), one id, an array of
+//     ids (a restricted user's whole scope), or "unassigned" (pre-outlet rows).
 const mongoose = require("mongoose");
 const Booking = require("../models/Booking");
 const BookingRequest = require("../models/BookingRequest");
+const { outletCondition } = require("../utils/outletScope");
 
 const oid = (v) => new mongoose.Types.ObjectId(String(v));
 
@@ -30,7 +37,7 @@ const oid = (v) => new mongoose.Types.ObjectId(String(v));
  * @returns {{ byVariant: Object<string,{variantId,variantKey,variantName,quantity}>,
  *             totalQuantity: number, bookingCount: number }}
  */
-async function confirmedTotals({ businessId, date, mealTypeId }) {
+async function confirmedTotals({ businessId, date, mealTypeId, outlet }) {
     const rows = await Booking.aggregate([
         {
             $match: {
@@ -38,6 +45,7 @@ async function confirmedTotals({ businessId, date, mealTypeId }) {
                 date: String(date),
                 mealTypeId: oid(mealTypeId),
                 status: "confirmed",
+                ...outletCondition(outlet),
             },
         },
         { $unwind: "$lines" },
@@ -65,6 +73,7 @@ async function confirmedTotals({ businessId, date, mealTypeId }) {
 
     const bookingCount = await Booking.countDocuments({
         businessId, date: String(date), mealTypeId, status: "confirmed",
+        ...outletCondition(outlet),
     });
 
     return { byVariant, totalQuantity, bookingCount };
@@ -79,9 +88,9 @@ async function confirmedTotals({ businessId, date, mealTypeId }) {
  *
  * @returns {Map<string, {byVariant, totalQuantity, bookingCount}>} keyed by mealTypeId
  */
-async function confirmedTotalsByMeal({ businessId, date }) {
+async function confirmedTotalsByMeal({ businessId, date, outlet }) {
     const rows = await Booking.aggregate([
-        { $match: { businessId: oid(businessId), date: String(date), status: "confirmed" } },
+        { $match: { businessId: oid(businessId), date: String(date), status: "confirmed", ...outletCondition(outlet) } },
         {
             $facet: {
                 lines: [
@@ -133,9 +142,9 @@ async function confirmedTotalsByMeal({ businessId, date }) {
  * the moment those merge into one number, the kitchen is cooking to a figure
  * nobody approved.
  */
-async function pendingSummaryByMeal({ businessId, date }) {
+async function pendingSummaryByMeal({ businessId, date, outlet }) {
     const rows = await BookingRequest.aggregate([
-        { $match: { businessId: oid(businessId), date: String(date), status: "pending" } },
+        { $match: { businessId: oid(businessId), date: String(date), status: "pending", ...outletCondition(outlet) } },
         {
             $group: {
                 _id: "$mealTypeId",
@@ -169,7 +178,7 @@ async function pendingSummaryByMeal({ businessId, date }) {
  * every day does not have a discipline problem; it has a cutoff that is an hour
  * too early.
  */
-async function lateAcceptedByMeal({ businessId, date }) {
+async function lateAcceptedByMeal({ businessId, date, outlet }) {
     const rows = await Booking.aggregate([
         {
             $match: {
@@ -177,6 +186,7 @@ async function lateAcceptedByMeal({ businessId, date }) {
                 date: String(date),
                 status: "confirmed",
                 submittedAfterCutoff: true,
+                ...outletCondition(outlet),
             },
         },
         { $group: { _id: "$mealTypeId", quantity: { $sum: "$totalQuantity" }, bookings: { $sum: 1 } } },
@@ -184,6 +194,71 @@ async function lateAcceptedByMeal({ businessId, date }) {
 
     const out = new Map();
     for (const r of rows) out.set(String(r._id), { quantity: r.quantity, bookings: r.bookings });
+    return out;
+}
+
+/**
+ * The per-outlet breakdown of one date, in ONE pass: confirmed quantity per
+ * (outlet, meal service, variant), plus the booking count per (outlet, meal).
+ *
+ * This is what the "All outlets" dashboard shows under the overall numbers.
+ * It is grouped from the same rows confirmedTotalsByMeal() sums, so the
+ * outlet lines always add up to the overall line — but the overall line is
+ * NOT computed from these; both come straight from the bookings.
+ *
+ * `outlet` narrows it the same way as everywhere else (a restricted user gets
+ * only their outlets' lines). Rows with no outlet come back under the key
+ * "unassigned", so history that predates outlets is visible, not lost.
+ *
+ * @returns {Map<string, { outletId, byMeal: Map<mealTypeId, {byVariant, totalQuantity, bookingCount}>, totalQuantity, bookingCount }>}
+ */
+async function confirmedTotalsByOutlet({ businessId, date, outlet }) {
+    const rows = await Booking.aggregate([
+        { $match: { businessId: oid(businessId), date: String(date), status: "confirmed", ...outletCondition(outlet) } },
+        {
+            $facet: {
+                lines: [
+                    { $unwind: "$lines" },
+                    {
+                        $group: {
+                            _id: { outletId: "$outletId", mealTypeId: "$mealTypeId", variantId: "$lines.variantId" },
+                            variantKey: { $first: "$lines.variantKey" },
+                            variantName: { $first: "$lines.variantName" },
+                            quantity: { $sum: "$lines.quantity" },
+                        },
+                    },
+                ],
+                counts: [{ $group: { _id: { outletId: "$outletId", mealTypeId: "$mealTypeId" }, bookingCount: { $sum: 1 } } }],
+            },
+        },
+    ]);
+
+    const facet = rows[0] || { lines: [], counts: [] };
+    const out = new Map();
+    const outletKey = (id) => (id ? String(id) : "unassigned");
+
+    const bucket = (outletId, mealTypeId) => {
+        const ok = outletKey(outletId);
+        if (!out.has(ok)) out.set(ok, { outletId: outletId ? String(outletId) : null, byMeal: new Map(), totalQuantity: 0, bookingCount: 0 });
+        const o = out.get(ok);
+        const mk = String(mealTypeId);
+        if (!o.byMeal.has(mk)) o.byMeal.set(mk, { byVariant: {}, totalQuantity: 0, bookingCount: 0 });
+        return [o, o.byMeal.get(mk)];
+    };
+
+    for (const r of facet.lines) {
+        const [o, m] = bucket(r._id.outletId, r._id.mealTypeId);
+        m.byVariant[String(r._id.variantId)] = {
+            variantId: String(r._id.variantId), variantKey: r.variantKey, variantName: r.variantName, quantity: r.quantity,
+        };
+        m.totalQuantity += r.quantity;
+        o.totalQuantity += r.quantity;
+    }
+    for (const c of facet.counts) {
+        const [o, m] = bucket(c._id.outletId, c._id.mealTypeId);
+        m.bookingCount = c.bookingCount;
+        o.bookingCount += c.bookingCount;
+    }
     return out;
 }
 
@@ -200,6 +275,7 @@ function orderVariants(byVariant, variants) {
 module.exports = {
     confirmedTotals,
     confirmedTotalsByMeal,
+    confirmedTotalsByOutlet,
     pendingSummaryByMeal,
     lateAcceptedByMeal,
     orderVariants,

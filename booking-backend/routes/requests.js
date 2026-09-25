@@ -14,6 +14,7 @@ const bookingService = require("../services/bookingService");
 const { authenticate, requirePermission } = require("../middleware/authenticate");
 const { isDateKey } = require("../utils/time");
 const { normalisePhone } = require("../utils/phone");
+const { scopedOutletMatch } = require("../utils/outletScope");
 
 const isId = (v) => mongoose.Types.ObjectId.isValid(String(v));
 const meta = (req) => ({ ip: req.ip, userAgent: req.headers["user-agent"] || "" });
@@ -25,9 +26,12 @@ router.get("/api/requests",
     authenticate, requirePermission("requests.view"),
     async (req, res, next) => {
         try {
-            const { status = "pending", date, from, to, mealTypeId, type, q, page = "1", limit = "50" } = req.query;
+            const { status = "pending", date, from, to, mealTypeId, type, q, outletId, page = "1", limit = "50" } = req.query;
 
             const filter = { businessId: req.businessId };
+            const om = await scopedOutletMatch(req, outletId);
+            if (!om.ok) return next(om.error);
+            Object.assign(filter, om.match);
             if (status && status !== "all") {
                 filter.status = { $in: String(status).split(",").map((s) => s.trim()).filter(Boolean) };
             }
@@ -74,7 +78,7 @@ router.get("/api/requests",
                 requests: rows.map((r) => ({ ...r, booking: byId.get(String(r.bookingId)) || null })),
                 page: Math.floor(skip / perPage) + 1, perPage, total, hasMore: skip + rows.length < total,
                 pendingCount: await BookingRequest.countDocuments({
-                    businessId: req.businessId, status: "pending",
+                    businessId: req.businessId, status: "pending", ...om.match,
                 }),
             });
         } catch (err) { next(err); }
@@ -102,6 +106,7 @@ router.post("/api/requests/:id/:decision",
                 decision,
                 note: req.body?.note,
                 actor: req.actor,
+                outletScope: req.outletScope,
                 requestMeta: meta(req),
             });
 

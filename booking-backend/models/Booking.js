@@ -60,6 +60,24 @@ const bookingSchema = new mongoose.Schema(
 
         partyId: { type: mongoose.Schema.Types.ObjectId, ref: "BookingParty", required: true, index: true },
 
+        /* ---- OUTLET ---------------------------------------------------------
+           Which serving point of the business this booking is for. Set ONCE at
+           create, from the outlet the customer (or the counter) chose, and
+           never inferred afterwards from anything on screen.
+
+           null has ONE meaning: the booking predates outlets at this business,
+           or the business runs no outlets at all. It is never "unknown, work
+           it out later". The migration deliberately leaves historical rows at
+           null rather than guessing an outlet for them — see
+           scripts/migrate-outlets.js, where an operator can assign them
+           explicitly if they choose to.
+
+           The name is a SNAPSHOT for the same reason the variant names are:
+           renaming "Block A" to "North Block" must not rewrite what last
+           month's kitchen sheet said. */
+        outletId: { type: mongoose.Schema.Types.ObjectId, ref: "Outlet", default: null, index: true },
+        outletName: { type: String, default: "" },
+
         // Snapshot of who booked, at booking time. The party record can be
         // edited later (corrected name, new site); this booking should still
         // read the way it did when it was placed.
@@ -139,6 +157,10 @@ const bookingSchema = new mongoose.Schema(
         // How it was marked: a QR scan at the counter, or typed by hand.
         consumedVia: { type: String, enum: ["scan", "manual", null], default: null },
         consumedNote: { type: String, default: "" },
+        // Where the meal was handed over. Always the booking's own outlet once
+        // the server has verified the scanning staff member may act there —
+        // never whatever outlet the scanner's screen happened to show.
+        consumedAtOutletId: { type: mongoose.Schema.Types.ObjectId, ref: "Outlet", default: null },
 
         // Set when status leaves "confirmed" for good, so the operator can see
         // when a booking dropped out of the count.
@@ -157,6 +179,11 @@ const bookingSchema = new mongoose.Schema(
 // The kitchen query: "everything confirmed for this meal on this date". Every
 // preparation count in the product runs through this exact shape.
 bookingSchema.index({ businessId: 1, date: 1, mealTypeId: 1, status: 1 });
+// The same kitchen query, per outlet: "Block A lunch on the 8th". The outlet
+// dashboard, the outlet kitchen sheet and the per-outlet breakdown all run
+// through this shape, and it is a prefix of the party/date listings too.
+bookingSchema.index({ businessId: 1, outletId: 1, date: 1, mealTypeId: 1, status: 1 });
+bookingSchema.index({ businessId: 1, outletId: 1, createdAt: -1 });
 bookingSchema.index({ businessId: 1, reference: 1 }, { unique: true });
 bookingSchema.index({ businessId: 1, createdAt: -1 });
 // Globally unique, not per-business: the ticket is looked up WITHOUT a business

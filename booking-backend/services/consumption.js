@@ -22,6 +22,7 @@
 const Booking = require("../models/Booking");
 const { DomainError } = require("./bookingService");
 const { record } = require("./audit");
+const { assertBookingInScope } = require("../utils/outletScope");
 
 const fail = (message, opts) => { throw new DomainError(message, opts); };
 
@@ -54,10 +55,21 @@ const consumedShape = (b) => ({
  */
 async function consumeBooking({
     businessId, bookingId, via = "manual", note = "",
+    // WHERE the scan is happening. `outletScope` is the staff member's own
+    // restriction (null = canteen-wide), read from their record by the
+    // middleware; `scanOutletId` is the outlet the counter says it is at,
+    // which may only ever narrow what the scope allows. See
+    // utils/outletScope.assertBookingInScope for the rule.
+    outletScope = null, scanOutletId = null,
     actor = null, now = new Date(), requestMeta = {},
 }) {
     const booking = await Booking.findOne({ _id: bookingId, businessId });
     if (!booking) fail("Booking not found.", { status: 404, code: "NO_BOOKING" });
+
+    // THE OUTLET CHECK COMES FIRST, before any state is revealed: a scanner
+    // at the wrong counter is told "not here", not "already served at 12:04
+    // by Priya". The booking's outlet is the row's, never the request's.
+    await assertBookingInScope({ scope: outletScope, booking, scanOutletId, businessId });
 
     if (booking.consumedAt) {
         fail(
@@ -89,18 +101,22 @@ async function consumeBooking({
     booking.consumedByName = actor?.name || "";
     booking.consumedVia = CONSUME_VIA.includes(String(via)) ? String(via) : "manual";
     booking.consumedNote = String(note || "").trim().slice(0, 300);
+    // Recorded against the booking's OWN outlet — the check above proved the
+    // scanner may act there. A pre-outlet booking has none to record.
+    booking.consumedAtOutletId = booking.outletId || null;
     await booking.save();
 
     record({
         businessId, actor, requestMeta,
         action: "Marked a booking as served",
-        bookingId: booking._id,
+        bookingId: booking._id, outletId: booking.outletId,
         before: { consumedAt: null },
-        after: { consumedAt: booking.consumedAt, consumedVia: booking.consumedVia },
+        after: { consumedAt: booking.consumedAt, consumedVia: booking.consumedVia, outlet: booking.outletName || null },
         details: {
             reference: booking.reference,
             date: booking.date,
             meal: booking.mealTypeName,
+            ...(booking.outletName ? { outlet: booking.outletName } : {}),
             customer: booking.partySnapshot?.name || "",
             meals: booking.totalQuantity,
             via: booking.consumedVia,
@@ -121,10 +137,12 @@ async function consumeBooking({
  */
 async function unconsumeBooking({
     businessId, bookingId, note = "",
+    outletScope = null, scanOutletId = null,
     actor = null, now = new Date(), requestMeta = {},
 }) {
     const booking = await Booking.findOne({ _id: bookingId, businessId });
     if (!booking) fail("Booking not found.", { status: 404, code: "NO_BOOKING" });
+    await assertBookingInScope({ scope: outletScope, booking, scanOutletId, businessId });
 
     if (!booking.consumedAt) {
         fail(`${booking.reference} isn't marked as served.`, { status: 409, code: "NOT_CONSUMED" });
@@ -140,13 +158,14 @@ async function unconsumeBooking({
     booking.consumedByUserId = null;
     booking.consumedByName = "";
     booking.consumedVia = null;
+    booking.consumedAtOutletId = null;
     booking.consumedNote = String(note || "").trim().slice(0, 300);
     await booking.save();
 
     record({
         businessId, actor, requestMeta,
         action: "Undid a served mark",
-        bookingId: booking._id,
+        bookingId: booking._id, outletId: booking.outletId,
         before,
         after: { consumedAt: null },
         details: {
